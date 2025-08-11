@@ -8,13 +8,14 @@ import pyproj
 import threading
 import rclpy
 import rclpy.serialization
+from collections import deque
 from rclpy.node import Node
 from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
-from std_msgs.msg import String, Empty
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
-from visualization_msgs.msg import Marker
+from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import NavSatFix
-from collections import deque
+from std_msgs.msg import String, Empty
+from visualization_msgs.msg import Marker
 
 class BagReaderNode(Node):
     def __init__(self):
@@ -26,12 +27,14 @@ class BagReaderNode(Node):
         self.declare_parameter('origin_lat', 0.0)
         self.declare_parameter('origin_lon', 0.0)
         self.declare_parameter('sim_rate', 1.0)
+        self.declare_parameter('is_clock_publisher', False)
 
         bag_path = self.get_parameter('bag_path').get_parameter_value().string_value
         self.buffer_size = self.get_parameter('buffer_size').get_parameter_value().integer_value
         self.sim_rate = self.get_parameter('sim_rate').get_parameter_value().double_value
         origin_lat = self.get_parameter('origin_lat').get_parameter_value().double_value
         origin_lon = self.get_parameter('origin_lon').get_parameter_value().double_value
+        self.is_clock_publisher = self.get_parameter('is_clock_publisher').get_parameter_value().bool_value
 
         if not bag_path:
             self.get_logger().error("'bag_path' parameter is not set. Shutting down.")
@@ -104,6 +107,12 @@ class BagReaderNode(Node):
         self.status_publisher = self.create_publisher(String, "status", status_qos)
         self.topics_info_publisher = self.create_publisher(String, "topics_info", status_qos)
 
+        self.clock_publisher = None
+        if self.is_clock_publisher:
+            self.clock_publisher = self.create_publisher(Clock, '/clock', 10)
+            self.get_logger().info("This node is designated as the master clock publisher.")
+            
+
         # publish the actual topic list with types (use publisher.topic_name for dst)
         topics_json = json.dumps([
             {'name': self.src_to_dst.get(cfg['src'], cfg['src']),
@@ -128,6 +137,7 @@ class BagReaderNode(Node):
         self.status_publisher.publish(String(data='ready'))
         self.create_subscription(Empty, '/start_simulation', self.start_playback_callback, 10)
         self.get_logger().info("Bag reader is ready and waiting for /start_simulation signal.")
+
 
     def start_playback_callback(self, msg):
         if not self.is_playing:
@@ -197,6 +207,12 @@ class BagReaderNode(Node):
                 # GPS handling
                 if isinstance(msg, NavSatFix):
                     self.publish_gps_marker(msg)
+
+            if self.is_clock_publisher and self.clock_publisher:
+                current_clock_msg = Clock()
+                sim_time = rclpy.time.Time(seconds=msg_time_sec)
+                current_clock_msg.clock = sim_time.to_msg()
+                self.clock_publisher.publish(current_clock_msg)
 
     def initialize_projection(self, lat, lon):
         # AEQD local projection centered on origin

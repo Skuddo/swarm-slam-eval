@@ -123,8 +123,9 @@ class OdometryNode(Node):
         t = TransformStamped()
         t.header.stamp = msg.header.stamp
         t.header.frame_id = "world"  # or "map" or whichever fixed frame you use
-        t.child_frame_id = "base_enu"  # this frame must match your RViz Fixed Frame or TF tree
-
+        robot_namespace = self.get_namespace().strip('/')
+        t.child_frame_id = f"{robot_namespace}/base_enu"
+        
         t.transform.translation.x = msg.pose.pose.position.x
         t.transform.translation.y = msg.pose.pose.position.y
         t.transform.translation.z = msg.pose.pose.position.z
