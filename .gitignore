@@ -53,3 +53,5 @@ CATKIN_IGNORE
 src/log
 src/build
 src/install
+src/*.gv
+src/*.pdf
