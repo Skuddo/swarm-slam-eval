@@ -23,7 +23,7 @@ setup(
         'console_scripts': [
             'bag_reader_node = swarm_slam_eval.bag_reader:main',
             'sync_node = swarm_slam_eval.sync:main',
-            'odometry_node = swarm_slam_eval.odometry.ground_truth:main',
+            'ground_truth_node = swarm_slam_eval.odometry.ground_truth:main',
             'imu_node = swarm_slam_eval.odometry.imu:main',
         ],
     },

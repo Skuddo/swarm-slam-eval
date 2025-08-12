@@ -13,20 +13,16 @@ import launch.logging
 # This is the main orchestrator function. It runs at launch time and sets everything up.
 def launch_setup(context, *args, **kwargs):
     logger = launch.logging.get_logger("launch_setup")
-    actions_to_launch = []
     
-    # --- 1. Resolve all launch arguments and paths ---
     dataset = LaunchConfiguration('dataset').perform(context)
     sequence = LaunchConfiguration('dataset_sequence').perform(context)
     num_robots = int(LaunchConfiguration('num_robots').perform(context))
     sim_rate = float(LaunchConfiguration('sim_rate').perform(context))
     use_sim_time = bool(LaunchConfiguration('use_sim_time').perform(context))
 
-    odometry_pkg_share = get_package_share_directory('swarm_slam_eval')
-    
     try:
-        # This logic finds your project root based on the package location in the install space
-        project_root = os.path.abspath(os.path.join(odometry_pkg_share, '../../../../../'))
+        pkg_share = get_package_share_directory('swarm_slam_eval')
+        project_root = os.path.abspath(os.path.join(pkg_share, '../../../../../'))
         dataset_path = os.path.join(project_root, 'datasets', dataset)
         config_path = os.path.join(dataset_path, "config.yaml")
         with open(config_path, 'r') as f:
@@ -35,16 +31,23 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"Could not load dataset config at '{config_path}': {e}")
         return [Shutdown()]
 
-    # --- 2. Pre-scan the bag file to get initial coordinates ---
+    # Check num robots param
+    conf_max_robots = config["ground"]["sequences"]
+    if conf_max_robots < num_robots:
+        logger.error(f"Num robots ({num_robots}) > max allowed ({conf_max_robots}). Shutting down.")
+        return [Shutdown()]
+    
+    # Pre-scan the bag file to get initial coordinates ---
     try:
         robot1_bag_name = f"{config[sequence]['names']}1"
         robot1_bag_path = os.path.join(dataset_path, robot1_bag_name)
         ground_truth_topic_name = config[sequence]['topics']['ground_truth']['src']
-        
-        # Path to the script in your project's utils directory
         prescan_script_path = os.path.join(project_root, 'utils', 'get_first_pose.py')
 
-        command = [ sys.executable, prescan_script_path, '--bag-path', robot1_bag_path, '--topic', ground_truth_topic_name ]
+        command = [ sys.executable, prescan_script_path,
+                   '--bag-path', robot1_bag_path,
+                   '--topic', ground_truth_topic_name 
+                   ]
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         initial_x_str, initial_y_str = result.stdout.strip().split(',')
         initial_x = float(initial_x_str)
@@ -54,12 +57,11 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"Failed to get initial coordinates from bag: {e}. Defaulting to (0,0).")
         initial_x, initial_y = 0.0, 0.0
 
-    # 2.5 Generate the rviz config
+    # Generate the rviz config
     try:
         config_script_path = os.path.join(project_root, 'utils', 'config_generator.py')
-        rviz_config_file = os.path.join(odometry_pkg_share, 'config', f"generated_{num_robots}_robots.rviz")
+        rviz_config_file = os.path.join(pkg_share, 'config', f"generated_{num_robots}_robots.rviz")
 
-        # Build the command to execute the script
         command = [
             sys.executable, config_script_path,
             '--num-robots', str(num_robots),
@@ -67,27 +69,20 @@ def launch_setup(context, *args, **kwargs):
             '--initial-y', str(initial_y),
             '--output-path', rviz_config_file
         ]
-        # Run the command
         subprocess.run(command, check=True)
-        logger.info(f"Successfully ran RViz config generator script.")
+        logger.info(f"Successfully created RViz config at {rviz_config_file}")
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logger.error(f"Failed to generate RViz config file via script: {e}")
         return [Shutdown()]
-
-    # Robot nodes (bag reader + odometry)
-    conf_max_robots = config["ground"]["sequences"]
-    if conf_max_robots < num_robots:
-        logger.error(f"Num robots ({num_robots}) > max allowed ({conf_max_robots}). Shutting down.")
-        return [Shutdown()]
-
-    conf_dataset_names = config[sequence]["names"]
+    
+    # Pack nodes
+    actions_to_launch = []
     for i in range(1, num_robots + 1):
-        robot_n = f'r{i}'
-        bag_path = os.path.join(dataset_path, f'{conf_dataset_names}{i}')
+        bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i}')
         is_master_clock = (i == 1)
 
         robot_group = GroupAction([
-            PushRosNamespace(robot_n),
+            PushRosNamespace(f'r{i}'),
             Node(
                 package='swarm_slam_eval',
                 executable='bag_reader_node',
@@ -102,8 +97,8 @@ def launch_setup(context, *args, **kwargs):
             ),
             Node(
                 package='swarm_slam_eval',
-                executable='odometry_node',
-                name='odometry',
+                executable='ground_truth_node',
+                name='ground_truth',
                 output='screen',
                 parameters=[{
                     'use_sim_time': use_sim_time
