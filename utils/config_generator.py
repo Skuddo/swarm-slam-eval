@@ -53,7 +53,7 @@ Visualization Manager:
         namespace = f"r{i}"
         rviz_content += f"""
     - Class: rviz_default_plugins/Marker
-      Name: Robot {i} Markers
+      Name: Robot {i} Ground Truth
       Topic:
         Value: /{namespace}/visualization_marker
       Enabled: true

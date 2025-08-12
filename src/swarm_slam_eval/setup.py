@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'swarm_slam_odometry'
+package_name = 'swarm_slam_eval'
 
 setup(
     name=package_name,
@@ -21,9 +21,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'odometry_node = swarm_slam_odometry.odometry:main',
-            'bag_reader_node = swarm_slam_odometry.bag_reader:main',
-            'sync_node = swarm_slam_odometry.sync:main',
+            'bag_reader_node = swarm_slam_eval.bag_reader:main',
+            'sync_node = swarm_slam_eval.sync:main',
+            'odometry_node = swarm_slam_eval.odometry.ground_truth:main',
+            'imu_node = swarm_slam_eval.odometry.imu:main',
         ],
     },
 )

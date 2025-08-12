@@ -22,7 +22,7 @@ def launch_setup(context, *args, **kwargs):
     sim_rate = float(LaunchConfiguration('sim_rate').perform(context))
     use_sim_time = bool(LaunchConfiguration('use_sim_time').perform(context))
 
-    odometry_pkg_share = get_package_share_directory('swarm_slam_odometry')
+    odometry_pkg_share = get_package_share_directory('swarm_slam_eval')
     
     try:
         # This logic finds your project root based on the package location in the install space
@@ -89,7 +89,7 @@ def launch_setup(context, *args, **kwargs):
         robot_group = GroupAction([
             PushRosNamespace(robot_n),
             Node(
-                package='swarm_slam_odometry',
+                package='swarm_slam_eval',
                 executable='bag_reader_node',
                 name='bag_reader',
                 output='screen',
@@ -101,7 +101,7 @@ def launch_setup(context, *args, **kwargs):
                 }],
             ),
             Node(
-                package='swarm_slam_odometry',
+                package='swarm_slam_eval',
                 executable='odometry_node',
                 name='odometry',
                 output='screen',
@@ -114,7 +114,7 @@ def launch_setup(context, *args, **kwargs):
 
     # Sync node
     actions_to_launch.append(Node(
-        package='swarm_slam_odometry',
+        package='swarm_slam_eval',
         executable='sync_node',
         name='sync_node',
         output='screen',

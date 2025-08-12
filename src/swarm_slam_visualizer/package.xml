@@ -4,7 +4,7 @@
   <name>swarm_slam_visualizer</name>
   <version>0.0.0</version>
   <description>swarm-slam-evaluator visualization node</description>
-  <maintainer email="56997587+Skuddo@users.noreply.github.com">marcel</maintainer>
+  <maintainer email="56997587+Skuddo@users.noreply.github.com">Skuddo</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>

@@ -10,9 +10,9 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from geometry_msgs.msg import TransformStamped
 
-class OdometryNode(Node):
+class GroundTruthNode(Node):
     def __init__(self):
-        super().__init__('odometry_node')
+        super().__init__('ground_truth_node')
         self.is_running = False
         self.is_registered = False
         self.available_topics = []
@@ -26,7 +26,7 @@ class OdometryNode(Node):
         self.create_subscription(String, 'status', self.on_bag_ready_callback, status_qos)
         self.tf_broadcaster = TransformBroadcaster(self)
 
-        self.get_logger().info('OdometryNode initialized, waiting for bag reader status...')
+        self.get_logger().info('GroundTruthNode initialized, waiting for bag reader status...')
 
     def on_bag_ready_callback(self, msg: String):
         if msg.data == 'ready' and not self.is_registered:
@@ -124,11 +124,11 @@ class OdometryNode(Node):
     def on_start_callback(self, msg: Empty):
         if not self.is_running:
             self.is_running = True
-            self.get_logger().info('Starting odometry processing')
+            self.get_logger().info('Starting ground truth processing')
 
 def main(args=None):
     rclpy.init(args=args)
-    node = OdometryNode()
+    node = GroundTruthNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
