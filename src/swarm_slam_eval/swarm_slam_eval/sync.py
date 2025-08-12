@@ -4,20 +4,19 @@ from std_msgs.msg import Empty
 from std_srvs.srv import Trigger
 from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
-from rclpy.qos import QoSProfile, QoSDurabilityPolicy
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 class SyncNode(Node):
-    """
-    Manages the startup and shutdown of the simulation.
-    1. Waits for all robot odometry nodes to register as ready.
-    2. Publishes a /start_simulation signal.
-    3. Waits for all robot bag readers to report they are finished.
-    4. Initiates a system shutdown.
-    """
     def __init__(self):
         super().__init__('sync_node')
         self.declare_parameter('num_robots', 0)
         self.num_robots = self.get_parameter('num_robots').get_parameter_value().integer_value
+
+        self.signal_qos = QoSProfile(
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            depth=1, 
+        )
  
         if self.num_robots == 0:
             self.get_logger().error("num_robots is 0, shutting down immediately.")
@@ -33,7 +32,7 @@ class SyncNode(Node):
         self.start_publisher = self.create_publisher(
             Empty,
             '/start_simulation',
-            10
+            self.signal_qos
         )
 
         # Service for odometry nodes to report they are ready
@@ -42,8 +41,6 @@ class SyncNode(Node):
             '/register_ready',
             self.register_callback
         )
-
-        status_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         
         for i in range(1, self.num_robots + 1):
             robot_id = i
@@ -51,7 +48,7 @@ class SyncNode(Node):
                 String,
                 f'/r{robot_id}/status',
                 lambda msg, rid=robot_id: self.status_callback(msg, rid),
-                status_qos
+                self.signal_qos
             )
 
     def register_callback(self, request, response):

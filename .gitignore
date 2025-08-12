@@ -50,8 +50,8 @@ qtcreator-*
 # Catkin custom files
 CATKIN_IGNORE
 
-src/log
-src/build
-src/install
+log
+build
+install
 src/*.gv
 src/*.pdf

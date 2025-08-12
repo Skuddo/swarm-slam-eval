@@ -13,6 +13,8 @@ class VisualizerNode(Node):
 
         self.declare_parameter('num_robots', 0)
         self.num_robots = self.get_parameter('num_robots').get_parameter_value().integer_value
+        self.declare_parameter('nav_mode', 'imu')
+        self.nav_mode = self.get_parameter('nav_mode').get_parameter_value().string_value
         
         self.latest_gt_poses = {} 
         self.ground_truth_paths = {i: [] for i in range(1, self.num_robots + 1)}
@@ -30,19 +32,20 @@ class VisualizerNode(Node):
             ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.8),  # Cyan
         ]
 
-        best_effort_qos = QoSProfile(
+        self.data_qos = QoSProfile(
             depth=10,
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             durability=QoSDurabilityPolicy.VOLATILE
         )
 
+        # ground truth pose
         for i in range(1, self.num_robots + 1):
             robot_id = i
             self.create_subscription(
                 PoseWithCovarianceStamped,
-                f'/r{robot_id}/visualization_pose',
+                f'/r{robot_id}/gt_viz_pose',
                 lambda msg, rid=robot_id: self.ground_truth_callback(msg, rid),
-                best_effort_qos
+                self.data_qos
             )
 
         self.path_publish_timer = self.create_timer(1.0, self.publish_paths_callback)

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 import json
 import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+from .odometry import OdometryNode
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 from std_msgs.msg import String, Empty
@@ -10,20 +9,14 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from geometry_msgs.msg import TransformStamped
 
-class GroundTruthNode(Node):
+class GroundTruthNode(OdometryNode):
     def __init__(self):
         super().__init__('ground_truth_node')
-        self.is_running = False
-        self.is_registered = False
-        self.available_topics = []
-        self.ground_truth_topic = None
-        self.odom_publisher = None
-
-        # subscribe to bag reader status (latched / transient-local)
-        status_qos = QoSProfile(depth=1)
-        status_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
-        status_qos.reliability = QoSReliabilityPolicy.RELIABLE
-        self.create_subscription(String, 'status', self.on_bag_ready_callback, status_qos)
+        self.create_subscription(
+            String, 'status',
+            self.on_bag_ready_callback,
+            self.signal_qos
+            )
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.get_logger().info('GroundTruthNode initialized, waiting for bag reader status...')
@@ -31,11 +24,11 @@ class GroundTruthNode(Node):
     def on_bag_ready_callback(self, msg: String):
         if msg.data == 'ready' and not self.is_registered:
             self.get_logger().info('Local bag reader is ready — subscribing to topics_info')
-            # subscribe to topics_info (transient-local so we get the last published list)
-            topics_qos = QoSProfile(depth=1)
-            topics_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
-            topics_qos.reliability = QoSReliabilityPolicy.RELIABLE
-            self.create_subscription(String, 'topics_info', self.on_topics_info_callback, topics_qos)
+            self.create_subscription(
+                String, 'topics_info',
+                self.on_topics_info_callback,
+                self.signal_qos
+                )
 
     def on_topics_info_callback(self, msg: String):
         if self.is_registered:
@@ -53,7 +46,6 @@ class GroundTruthNode(Node):
             name = topic_info.get('name', '')
             typ = topic_info.get('type', '')
             if typ in odom_type_strings or 'Odometry' in typ:
-                # choose first matching odometry topic
                 self.ground_truth_topic = name
                 found = True
                 self.get_logger().info(f"Found ground truth topic: {self.ground_truth_topic}")
@@ -65,24 +57,24 @@ class GroundTruthNode(Node):
 
         self.is_registered = True
 
-        odom_qos = QoSProfile(depth=10)
-        odom_qos.reliability = QoSReliabilityPolicy.BEST_EFFORT
-        odom_qos.durability = QoSDurabilityPolicy.VOLATILE
-        self.create_subscription(Odometry, self.ground_truth_topic, self.ground_truth_callback, odom_qos)
+        self.create_subscription(Odometry, self.ground_truth_topic, self.ground_truth_callback, self.data_qos)
 
-        pub_qos = QoSProfile(depth=10)
-        pub_qos.reliability = QoSReliabilityPolicy.BEST_EFFORT
-        pub_qos.durability = QoSDurabilityPolicy.VOLATILE
-        self.odom_publisher = self.create_publisher(PoseWithCovarianceStamped, 'visualization_pose', pub_qos)
+        self.odom_publisher = self.create_publisher(
+            PoseWithCovarianceStamped,
+            'gt_viz_pose', self.data_qos
+            )
 
-        # Register with sync node (non-blocking)
         self.register_with_sync_node()
 
     def register_with_sync_node(self):
         self.reg_client = self.create_client(Trigger, '/register_ready')
         if not self.reg_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warn("Sync service '/register_ready' not available (timeout). Continuing without registration.")
-            self.create_subscription(Empty, '/start_simulation', self.on_start_callback, 10)
+            self.create_subscription(
+                Empty, '/start_simulation',
+                self.on_start_callback, 
+                self.signal_qos
+                )
             return
 
         future = self.reg_client.call_async(Trigger.Request())
@@ -94,7 +86,11 @@ class GroundTruthNode(Node):
                 self.get_logger().warn(f"Register service call failed: {e}")
         future.add_done_callback(_on_reg_done)
 
-        self.create_subscription(Empty, '/start_simulation', self.on_start_callback, 10)
+        self.create_subscription(
+            Empty, '/start_simulation',
+            self.on_start_callback,
+            self.signal_qos
+            )
         self.get_logger().info('Waiting for /start_simulation...')
 
     def ground_truth_callback(self, msg):
