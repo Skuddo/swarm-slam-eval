@@ -179,14 +179,10 @@ class BagReaderNode(Node):
             elapsed_bag = msg_time_sec - first_msg_time
             elapsed_wall = time.time() - wall_start_time
 
-            delay = (elapsed_bag - elapsed_wall) / max(self.sim_rate, 1e-9)
+            delay = (elapsed_bag / self.sim_rate) - elapsed_wall
+            
             if delay > 0:
                 time.sleep(delay)
-
-            last_pub = self.last_pub_time.get(topic)
-            min_interval = 1.0 / float(self.topic_hz.get(topic, 1000.0))
-            if last_pub is not None and (msg_time_sec - last_pub) < min_interval:
-                continue
 
             msg_class = self.msg_types[topic]
             try:

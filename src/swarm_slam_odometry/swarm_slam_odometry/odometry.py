@@ -2,14 +2,13 @@
 import json
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Empty
-from std_srvs.srv import Trigger
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+from std_srvs.srv import Trigger
+from tf2_ros import TransformBroadcaster
+from std_msgs.msg import String, Empty
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
-import rclpy.time
 
 class OdometryNode(Node):
     def __init__(self):
@@ -48,7 +47,6 @@ class OdometryNode(Node):
             self.get_logger().error(f"Failed to parse topics_info JSON: {e}")
             return
 
-        # prefer matching by message type (nav_msgs/msg/Odometry)
         odom_type_strings = ('nav_msgs/msg/Odometry', 'nav_msgs/Odometry', 'nav_msgs/msg/Odometry')
         found = False
         for topic_info in self.available_topics:
@@ -58,23 +56,20 @@ class OdometryNode(Node):
                 # choose first matching odometry topic
                 self.ground_truth_topic = name
                 found = True
+                self.get_logger().info(f"Found ground truth topic: {self.ground_truth_topic}")
                 break
 
         if not found:
             self.get_logger().warn('No odometry topic found in topics_info. Received: ' + str(self.available_topics))
-            self.is_registered = True  # mark as registered to avoid reprocessing bad data
             return
 
         self.is_registered = True
-        self.get_logger().info(f"Found ground truth topic: {self.ground_truth_topic}")
 
-        # Subscribe to ground-truth odometry (use a reasonable QoS)
         odom_qos = QoSProfile(depth=10)
         odom_qos.reliability = QoSReliabilityPolicy.BEST_EFFORT
         odom_qos.durability = QoSDurabilityPolicy.VOLATILE
         self.create_subscription(Odometry, self.ground_truth_topic, self.ground_truth_callback, odom_qos)
 
-        # publisher for visualization pose (PoseWithCovarianceStamped)
         pub_qos = QoSProfile(depth=10)
         pub_qos.reliability = QoSReliabilityPolicy.BEST_EFFORT
         pub_qos.durability = QoSDurabilityPolicy.VOLATILE
@@ -84,17 +79,13 @@ class OdometryNode(Node):
         self.register_with_sync_node()
 
     def register_with_sync_node(self):
-        # create client and call register service
         self.reg_client = self.create_client(Trigger, '/register_ready')
         if not self.reg_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warn("Sync service '/register_ready' not available (timeout). Continuing without registration.")
-            # still subscribe to start topic so we can operate
             self.create_subscription(Empty, '/start_simulation', self.on_start_callback, 10)
             return
 
-        # call once (don't block waiting on response)
         future = self.reg_client.call_async(Trigger.Request())
-        # optionally add a done callback
         def _on_reg_done(fut):
             try:
                 res = fut.result()
@@ -103,7 +94,6 @@ class OdometryNode(Node):
                 self.get_logger().warn(f"Register service call failed: {e}")
         future.add_done_callback(_on_reg_done)
 
-        # subscribe to start signal (normal QoS)
         self.create_subscription(Empty, '/start_simulation', self.on_start_callback, 10)
         self.get_logger().info('Waiting for /start_simulation...')
 
@@ -111,7 +101,6 @@ class OdometryNode(Node):
         if not self.is_running:
             return
 
-        # Publish PoseWithCovarianceStamped as before
         pose_msg = PoseWithCovarianceStamped()
         pose_msg.header = msg.header
         pose_msg.pose = msg.pose
@@ -119,10 +108,9 @@ class OdometryNode(Node):
         if self.odom_publisher:
             self.odom_publisher.publish(pose_msg)
 
-        # Also broadcast TF transform
         t = TransformStamped()
         t.header.stamp = msg.header.stamp
-        t.header.frame_id = "world"  # or "map" or whichever fixed frame you use
+        t.header.frame_id = "world"
         robot_namespace = self.get_namespace().strip('/')
         t.child_frame_id = f"{robot_namespace}/base_enu"
         

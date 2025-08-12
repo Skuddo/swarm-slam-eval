@@ -1,9 +1,7 @@
-# Final, corrected visualizer.py
 
 import rclpy
 from rclpy.node import Node
-# FIX: Import the correct message type
-from geometry_msgs.msg import PoseWithCovarianceStamped, Point 
+from geometry_msgs.msg import PoseWithCovarianceStamped 
 from visualization_msgs.msg import Marker
 from std_msgs.msg import ColorRGBA
 from rclpy.duration import Duration
@@ -13,10 +11,9 @@ class VisualizerNode(Node):
     def __init__(self):
         super().__init__('visualizer_node')
 
-        self.declare_parameter('num_robots', 3) # Set a default for standalone testing
+        self.declare_parameter('num_robots', 0)
         self.num_robots = self.get_parameter('num_robots').get_parameter_value().integer_value
         
-        # ... colors, data storage, publishers are the same ...
         self.latest_gt_poses = {} 
         self.ground_truth_paths = {i: [] for i in range(1, self.num_robots + 1)}
         self.marker_publishers = {
@@ -74,10 +71,9 @@ class VisualizerNode(Node):
             path_marker.scale.z = 0.3
             
             path_marker.color = self.path_colors[robot_id - 1]
-            path_marker.lifetime = Duration(seconds=0).to_msg() # Persist forever
+            path_marker.lifetime = Duration(seconds=0).to_msg()
             publisher.publish(path_marker)
 
-# ... main function is the same ...
 def main(args=None):
     rclpy.init(args=args)
     node = VisualizerNode()

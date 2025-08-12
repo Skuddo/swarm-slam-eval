@@ -23,7 +23,6 @@ def launch_setup(context, *args, **kwargs):
     use_sim_time = bool(LaunchConfiguration('use_sim_time').perform(context))
 
     odometry_pkg_share = get_package_share_directory('swarm_slam_odometry')
-    visualizer_pkg_share = get_package_share_directory('swarm_slam_visualizer')
     
     try:
         # This logic finds your project root based on the package location in the install space
@@ -75,8 +74,7 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"Failed to generate RViz config file via script: {e}")
         return [Shutdown()]
 
-    # --- 3. Prepare all nodes and actions to be launched ---
-    # A. Robot nodes (bag reader + odometry)
+    # Robot nodes (bag reader + odometry)
     conf_max_robots = config["ground"]["sequences"]
     if conf_max_robots < num_robots:
         logger.error(f"Num robots ({num_robots}) > max allowed ({conf_max_robots}). Shutting down.")
@@ -114,26 +112,32 @@ def launch_setup(context, *args, **kwargs):
         ])
         actions_to_launch.append(robot_group)
 
-    # B. Sync node
+    # Sync node
     actions_to_launch.append(Node(
         package='swarm_slam_odometry',
         executable='sync_node',
         name='sync_node',
         output='screen',
-        parameters=[{'num_robots': LaunchConfiguration('num_robots'), 'use_sim_time': use_sim_time}]
+        parameters=[{
+            'num_robots': LaunchConfiguration('num_robots'),
+            'use_sim_time': use_sim_time
+            }]
     ))
 
-    # C. Visualizer node
+    # Visualizer node
     actions_to_launch.append(Node(
         package='swarm_slam_visualizer',
         executable='visualizer_node',
         name='visualizer_node',
         output='screen',
-        parameters=[{'num_robots': LaunchConfiguration('num_robots'), 'use_sim_time': use_sim_time}],
+        parameters=[{
+            'num_robots': LaunchConfiguration('num_robots'),
+            'use_sim_time': use_sim_time
+            }],
         condition=IfCondition(LaunchConfiguration('visualize')),
     ))
 
-    # D. RViz node
+    # RViz node
     actions_to_launch.append(ExecuteProcess(
         cmd=['rviz2', '-d', rviz_config_file, '--ros-args', '-p', f'use_sim_time:={use_sim_time}'],
         output='screen',
@@ -145,7 +149,6 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
-        # Declare all launch arguments first
         DeclareLaunchArgument('dataset', default_value='GrAco'),
         DeclareLaunchArgument('dataset_sequence', default_value='ground'),
         DeclareLaunchArgument('num_robots', default_value='3'),
@@ -155,6 +158,5 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true',
                               description='Use simulation (bag) time'),
         
-        # This single OpaqueFunction now orchestrates the entire launch process
         OpaqueFunction(function=launch_setup)
     ])
