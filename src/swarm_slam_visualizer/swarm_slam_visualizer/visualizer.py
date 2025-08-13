@@ -34,14 +34,14 @@ class VisualizerNode(Node):
                 Marker, f'/r{i}/{self.nav_mode}_vis_marker', 10)
 
         self.path_colors = [
-            ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8),  # Red
-            ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8),  # Green 
-            ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.8),  # Blue 
-            ColorRGBA(r=1.0, g=1.0, b=0.0, a=0.8),  # Yellow
-            ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.8),  # Magenta
-            ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.8),  # Cyan
+            ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8),   # Red
+            ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8),   # Green
+            ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.8),   # Blue
+            ColorRGBA(r=1.0, g=0.6, b=0.6, a=1.0),   # Light Red (pinkish tint)
+            ColorRGBA(r=0.6, g=1.0, b=0.6, a=1.0),   # Light Green (minty tint)
+            ColorRGBA(r=0.6, g=0.6, b=1.0, a=1.0),   # Light Blue (sky blue)
         ]
-
+        
         self.data_qos = QoSProfile(
             depth=10,
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -62,7 +62,7 @@ class VisualizerNode(Node):
                 self.create_subscription(
                     PoseWithCovarianceStamped,
                     f'/r{robot_id}/{self.nav_mode}_vis_pose',
-                    lambda msg, rid=robot_id: self.pose_callback(msg, rid, self.nav_mode),
+                    lambda msg, rid=robot_id: self.pose_callback(msg, rid, False),
                     self.data_qos
                 )
 
@@ -70,7 +70,7 @@ class VisualizerNode(Node):
         self.path_publish_timer = self.create_timer(1.0, self.publish_paths_callback)
         self.get_logger().info(f"VisualizerNode started for {self.num_robots} robots.")
 
-    def pose_callback(self, msg: PoseWithCovarianceStamped, robot_id: int, gt: str=True):
+    def pose_callback(self, msg: PoseWithCovarianceStamped, robot_id: int, gt: bool=True):
         if gt:
             self.latest_gt_poses[robot_id] = msg
         else:
@@ -86,16 +86,13 @@ class VisualizerNode(Node):
             path_marker.header.frame_id = "world"
             path_marker.header.stamp = self.get_clock().now().to_msg()
             path_marker.ns = "gps_ground_truth_path"
-            path_marker.id = 1
-            path_marker.type = Marker.SPHERE_LIST
+            path_marker.id = robot_id 
+            path_marker.type = Marker.LINE_STRIP 
             path_marker.action = Marker.ADD
             path_marker.points = self.gt_paths[robot_id]
             
             path_marker.scale.x = 0.3
-            path_marker.scale.y = 0.3
-            path_marker.scale.z = 0.3
-            
-            path_marker.color = self.path_colors[robot_id - 1]
+            path_marker.color = self.path_colors[(robot_id - 1) % len(self.path_colors)] # Robust color indexing
             path_marker.lifetime = Duration(seconds=0).to_msg()
             publisher.publish(path_marker)
 
@@ -108,16 +105,14 @@ class VisualizerNode(Node):
             path_marker.header.frame_id = "world"
             path_marker.header.stamp = self.get_clock().now().to_msg()
             path_marker.ns = "imu_pose_path"
-            path_marker.id = 1
-            path_marker.type = Marker.SPHERE_LIST
+            path_marker.id = robot_id 
+            path_marker.type = Marker.LINE_STRIP
             path_marker.action = Marker.ADD
             path_marker.points = self.nav_paths[robot_id]
             
-            path_marker.scale.x = 0.25
-            path_marker.scale.y = 0.25
-            path_marker.scale.z = 0.25
-            
-            path_marker.color = self.path_colors[robot_id + 2]
+            path_marker.scale.x = 0.2
+            color_offset = len(self.path_colors) // 2 
+            path_marker.color = self.path_colors[(robot_id - 1 + color_offset) % len(self.path_colors)]
             path_marker.lifetime = Duration(seconds=0).to_msg()
             publisher.publish(path_marker)
 

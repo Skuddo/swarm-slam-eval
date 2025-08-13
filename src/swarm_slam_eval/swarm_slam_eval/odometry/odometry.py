@@ -1,5 +1,5 @@
 import json
-from nav_msgs.msg import Odometry
+import threading
 from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
 from rclpy.node import Node
@@ -12,11 +12,13 @@ class OdometryNode(Node):
         super().__init__(node_name)
         self.is_running = False
         self.is_registered = False
+        self.is_initialized = False
         self.available_topics = []
         self.pose_topic = None
         self.odom_publisher = None
         self.odom_type = None
         self.mode = None
+        self.msg_type = None
 
         self.signal_qos = QoSProfile(
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -34,6 +36,20 @@ class OdometryNode(Node):
             self.signal_qos
             )
         self.tf_broadcaster = TransformBroadcaster(self)
+
+        self.reg_client = self.create_client(Trigger, '/register_ready')
+
+    def register_self(self):
+        thread = threading.Thread(target=self._register_thread_worker, daemon=True)
+        thread.start()
+
+    def _register_thread_worker(self):
+        while not self.reg_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info("Sync service not available, waiting...")
+        
+        future = self.reg_client.call_async(Trigger.Request())
+        future.add_done_callback(lambda f: self.get_logger().info("Successfully registered with sync node."))
+
 
     def on_topics_info_callback(self, msg: String):
         if self.is_registered:
@@ -60,21 +76,32 @@ class OdometryNode(Node):
             self.get_logger().warn(f'No {self.odom_type} topic found in topics_info. Received: ' + str(self.available_topics))
             return
 
-        self.is_registered = True
 
         self.create_subscription(
-            Odometry,
+            self.msg_type,
             self.pose_topic,
             self.pose_callback,
             self.data_qos
             )
-
+        
         self.odom_publisher = self.create_publisher(
             PoseWithCovarianceStamped,
             f'{self.mode}_vis_pose', self.data_qos
             )
+        
 
-        self.register_with_sync_node()
+        self.create_subscription(
+            Empty, 
+            '/start_simulation',
+            self.on_start_callback,
+            self.signal_qos
+        )
+
+        if self.mode == 'gt':
+            self.register_self()
+            self.is_registered = True
+
+        self.get_logger().info('Ready. Waiting for /start_simulation signal...')
 
     def on_bag_ready_callback(self, msg: String):
         if msg.data == 'ready' and not self.is_registered:

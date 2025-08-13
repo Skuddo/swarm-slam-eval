@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import importlib
 import json
 import yaml
@@ -8,6 +7,7 @@ import pyproj
 import threading
 import rclpy
 import rclpy.serialization
+from std_srvs.srv import Trigger
 from collections import deque
 from rclpy.node import Node
 from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
@@ -128,12 +128,12 @@ class BagReaderNode(Node):
         self.message_buffer = deque()
         self.stats_counter = {}
         self.is_playing = False
-
-        # announce ready (transient-local — subscribed nodes will see it)
+        
+        # Announce ready and wait for start signal
         self.status_publisher.publish(String(data='ready'))
         self.create_subscription(Empty, '/start_simulation', self.start_playback_callback, sig_qos)
-        self.get_logger().info("Bag reader is ready and waiting for /start_simulation signal.")
 
+        self.get_logger().info("Bag reader is ready and waiting for /start_simulation signal.")
 
     def start_playback_callback(self, msg):
         if not self.is_playing:
