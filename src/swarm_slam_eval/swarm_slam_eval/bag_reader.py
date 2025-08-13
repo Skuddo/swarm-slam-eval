@@ -13,7 +13,6 @@ from rclpy.node import Node
 from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import String, Empty
 from visualization_msgs.msg import Marker
 
@@ -122,8 +121,6 @@ class BagReaderNode(Node):
         self.topics_info_publisher.publish(String(data=topics_json))
         self.get_logger().info(f"Published topics_info: {topics_json}")
 
-        self.gps_marker_pub = self.create_publisher(Marker, '/gps_path_marker', 10)
-        self.gps_proj = None
         self.origin_is_set = False
         if origin_lat != 0.0 and origin_lon != 0.0:
             self.get_logger().info(f"Using provided origin: LAT={origin_lat}, LON={origin_lon}")
@@ -200,10 +197,6 @@ class BagReaderNode(Node):
                 dst_topic = self.src_to_dst.get(topic, topic)
                 self.stats_counter[dst_topic] = self.stats_counter.get(dst_topic, 0) + 1
 
-                # GPS handling
-                if isinstance(msg, NavSatFix):
-                    self.publish_gps_marker(msg)
-
             if self.is_clock_publisher and self.clock_publisher:
                 current_clock_msg = Clock()
                 sim_time = rclpy.time.Time(seconds=msg_time_sec)
@@ -224,35 +217,6 @@ class BagReaderNode(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to initialize projection: {e}")
             self.origin_is_set = False
-
-    def publish_gps_marker(self, gps_msg: NavSatFix):
-        if not self.origin_is_set:
-            if gps_msg.latitude == 0.0 and gps_msg.longitude == 0.0:
-                self.get_logger().warn("Skipping GPS message with invalid coordinates (0,0).")
-                return
-            # initialize origin on first valid GPS message
-            self.initialize_projection(gps_msg.latitude, gps_msg.longitude)
-            return
-
-        try:
-            x, y = self.enu_transformer.transform(gps_msg.longitude, gps_msg.latitude)
-            marker = Marker()
-            marker.header = gps_msg.header
-            marker.type = Marker.SPHERE
-            marker.action = Marker.ADD
-            marker.scale.x = 0.3
-            marker.scale.y = 0.3
-            marker.scale.z = 0.3
-            marker.color.a = 0.8
-            marker.color.r = 0.0
-            marker.color.g = 1.0
-            marker.color.b = 0.0
-            marker.pose.position.x = x
-            marker.pose.position.y = y
-            marker.pose.position.z = gps_msg.altitude
-            self.gps_marker_pub.publish(marker)
-        except Exception as e:
-            self.get_logger().error(f"Failed to publish GPS marker: {e}")
 
     def import_msg_type(self, msg_type_str):
         try:

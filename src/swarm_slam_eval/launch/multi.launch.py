@@ -10,6 +10,15 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 import launch.logging
 
+nav_modes = {
+    "imu": {
+        
+    },
+    # "vins": {
+        
+    # }
+}
+
 # This is the main orchestrator function. It runs at launch time and sets everything up.
 def launch_setup(context, *args, **kwargs):
     logger = launch.logging.get_logger("launch_setup")
@@ -19,6 +28,7 @@ def launch_setup(context, *args, **kwargs):
     num_robots = int(LaunchConfiguration('num_robots').perform(context))
     sim_rate = float(LaunchConfiguration('sim_rate').perform(context))
     use_sim_time = bool(LaunchConfiguration('use_sim_time').perform(context))
+    nav_mode = str(LaunchConfiguration('nav_mode').perform(context))
 
     try:
         pkg_share = get_package_share_directory('swarm_slam_eval')
@@ -36,6 +46,11 @@ def launch_setup(context, *args, **kwargs):
     if conf_max_robots < num_robots:
         logger.error(f"Num robots ({num_robots}) > max allowed ({conf_max_robots}). Shutting down.")
         return [Shutdown()]
+    
+    # prepare list od odometry nodes based on launch config
+    # ground truth should always be there, default: "imu"
+    nav_modes = ['ground_truth']
+    # nav_modes.append(nav_mode)
     
     # Pre-scan the bag file to get initial coordinates ---
     try:
@@ -79,7 +94,19 @@ def launch_setup(context, *args, **kwargs):
     actions_to_launch = []
     for i in range(1, num_robots + 1):
         bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i}')
-        is_master_clock = (i == 1)
+
+        nav_nodes = []
+        for mode in nav_modes:
+            node = Node(
+                package='swarm_slam_eval',
+                executable=f"{mode}_node",
+                name=mode,
+                output='screen',
+                parameters=[{
+                    'use_sim_time': use_sim_time
+                }],
+            )
+            nav_nodes.append(node)
 
         robot_group = GroupAction([
             PushRosNamespace(f'r{i}'),
@@ -92,18 +119,10 @@ def launch_setup(context, *args, **kwargs):
                     'bag_path': bag_path,
                     'sim_rate': sim_rate,
                     'use_sim_time': use_sim_time,
-                    'is_clock_publisher': is_master_clock
+                    'is_clock_publisher': (i == 1)
                 }],
             ),
-            Node(
-                package='swarm_slam_eval',
-                executable='ground_truth_node',
-                name='ground_truth',
-                output='screen',
-                parameters=[{
-                    'use_sim_time': use_sim_time
-                }],
-            )
+            *nav_nodes 
         ])
         actions_to_launch.append(robot_group)
 
@@ -152,6 +171,8 @@ def generate_launch_description():
                               description='Whether to launch visualization nodes'),
         DeclareLaunchArgument('use_sim_time', default_value='true',
                               description='Use simulation (bag) time'),
+        DeclareLaunchArgument('nav_mode', default_value='imu',
+                              description='What to use for pose calculation'),
         
         OpaqueFunction(function=launch_setup)
     ])
