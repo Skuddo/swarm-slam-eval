@@ -14,7 +14,6 @@ from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rosgraph_msgs.msg import Clock
 from std_msgs.msg import String, Empty
-from visualization_msgs.msg import Marker
 
 class BagReaderNode(Node):
     def __init__(self):
@@ -74,6 +73,14 @@ class BagReaderNode(Node):
         self.last_pub_time = {}
         self.src_to_dst = {}
 
+        data_qos = QoSProfile(depth=10)
+        data_qos.reliability = QoSReliabilityPolicy.BEST_EFFORT
+        data_qos.durability = QoSDurabilityPolicy.VOLATILE
+
+        sig_qos = QoSProfile(depth=1)
+        sig_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+        sig_qos.reliability = QoSReliabilityPolicy.RELIABLE
+
         for dst_name, cfg in topic_mappings.items():
             src_topic = cfg['src']
             hz = cfg.get('hz', 0)
@@ -85,11 +92,7 @@ class BagReaderNode(Node):
             if not msg_class:
                 continue
 
-            # Create publisher on the destination name (dst_name) so other nodes subscribe to dst_name
-            qos = QoSProfile(depth=10)
-            qos.reliability = QoSReliabilityPolicy.BEST_EFFORT
-            qos.durability = QoSDurabilityPolicy.VOLATILE
-            pub = self.create_publisher(msg_class, dst_name, qos)
+            pub = self.create_publisher(msg_class, dst_name, data_qos)
 
             # store keyed by src_topic so we can look up when reading bag
             self.topic_publishers[src_topic] = pub
@@ -99,16 +102,12 @@ class BagReaderNode(Node):
             self.src_to_dst[src_topic] = pub.topic_name
 
         # Publishers for status and topics_info (transient-local so subscribers joining later see last)
-        status_qos = QoSProfile(depth=1)
-        status_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
-        status_qos.reliability = QoSReliabilityPolicy.RELIABLE
-
-        self.status_publisher = self.create_publisher(String, "status", status_qos)
-        self.topics_info_publisher = self.create_publisher(String, "topics_info", status_qos)
+        self.status_publisher = self.create_publisher(String, "status", sig_qos)
+        self.topics_info_publisher = self.create_publisher(String, "topics_info", sig_qos)
 
         self.clock_publisher = None
         if self.is_clock_publisher:
-            self.clock_publisher = self.create_publisher(Clock, '/clock', 10)
+            self.clock_publisher = self.create_publisher(Clock, '/clock', sig_qos)
             self.get_logger().info("This node is designated as the master clock publisher.")
             
 
@@ -132,7 +131,7 @@ class BagReaderNode(Node):
 
         # announce ready (transient-local — subscribed nodes will see it)
         self.status_publisher.publish(String(data='ready'))
-        self.create_subscription(Empty, '/start_simulation', self.start_playback_callback, 10)
+        self.create_subscription(Empty, '/start_simulation', self.start_playback_callback, sig_qos)
         self.get_logger().info("Bag reader is ready and waiting for /start_simulation signal.")
 
 

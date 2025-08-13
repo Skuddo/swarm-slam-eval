@@ -10,6 +10,7 @@ class ImuNode(OdometryNode):
         super().__init__('imu_node')
         self.odom_type = 'Imu'
         self.mode = 'imu'
+        self.msg_type = Imu
         # --- Child-Specific State for IMU Integration ---
         self.position = np.array([0.0, 0.0, 0.0])
         self.velocity = np.array([0.0, 0.0, 0.0])

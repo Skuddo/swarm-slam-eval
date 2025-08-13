@@ -71,7 +71,7 @@ class OdometryNode(Node):
 
         self.odom_publisher = self.create_publisher(
             PoseWithCovarianceStamped,
-            f'{self.mode}_viz_pose', self.data_qos
+            f'{self.mode}_vis_pose', self.data_qos
             )
 
         self.register_with_sync_node()

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 import rclpy
 from .odometry import OdometryNode
-from geometry_msgs.msg import PoseWithCovarianceStamped
-from geometry_msgs.msg import TransformStamped
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 
 class GroundTruthNode(OdometryNode):
     def __init__(self):
         super().__init__('ground_truth_node')
         self.odom_type = 'Odometry'
         self.mode = 'gt'
+        self.msg_type = Odometry
+
         self.get_logger().info('GroundTruthNode initialized, waiting for bag reader status...')
 
 

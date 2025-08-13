@@ -82,6 +82,7 @@ def launch_setup(context, *args, **kwargs):
             '--num-robots', str(num_robots),
             '--initial-x', str(initial_x),
             '--initial-y', str(initial_y),
+            '--nav-mode', str(nav_mode),
             '--output-path', rviz_config_file
         ]
         subprocess.run(command, check=True)

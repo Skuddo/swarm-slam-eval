@@ -2,7 +2,7 @@
 import os
 import argparse
 
-def generate_rviz_config(num_robots: int, initial_x: float, initial_y: float, output_path: str):
+def generate_rviz_config(num_robots: int, initial_x: float, initial_y: float, output_path: str, nav_mode: str):
     """
     Generates an RViz configuration file and saves it to the specified path.
     """
@@ -55,7 +55,15 @@ Visualization Manager:
     - Class: rviz_default_plugins/Marker
       Name: Robot {i} Ground Truth
       Topic:
-        Value: /{namespace}/visualization_marker
+        Value: /{namespace}/gt_vis_marker
+      Enabled: true
+      Queue Size: 100
+"""
+        rviz_content += f"""
+    - Class: rviz_default_plugins/Marker
+      Name: Robot {i} {nav_mode} Pose
+      Topic:
+        Value: /{namespace}/{nav_mode}_vis_marker
       Enabled: true
       Queue Size: 100
 """
@@ -71,7 +79,8 @@ if __name__ == '__main__':
     parser.add_argument('--num-robots', type=int, required=True)
     parser.add_argument('--initial-x', type=float, required=True)
     parser.add_argument('--initial-y', type=float, required=True)
+    parser.add_argument('--nav-mode', type=str, required=True)
     parser.add_argument('--output-path', type=str, required=True)
     args = parser.parse_args()
 
-    generate_rviz_config(args.num_robots, args.initial_x, args.initial_y, args.output_path)
+    generate_rviz_config(args.num_robots, args.initial_x, args.initial_y, args.output_path, args.nav_mode)
