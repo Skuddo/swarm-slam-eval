@@ -50,7 +50,7 @@ def launch_setup(context, *args, **kwargs):
     # prepare list od odometry nodes based on launch config
     # ground truth should always be there, default: "imu"
     nav_modes = ['ground_truth']
-    # nav_modes.append(nav_mode)
+    nav_modes.append(nav_mode)
     
     # Pre-scan the bag file to get initial coordinates ---
     try:

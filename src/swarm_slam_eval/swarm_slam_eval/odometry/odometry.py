@@ -1,12 +1,11 @@
 import json
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
-from std_msgs.msg import String, Empty
-from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from tf2_ros import TransformBroadcaster
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
 class OdometryNode(Node):
     def __init__(self, node_name):
@@ -16,6 +15,8 @@ class OdometryNode(Node):
         self.available_topics = []
         self.pose_topic = None
         self.odom_publisher = None
+        self.odom_type = None
+        self.mode = None
 
         self.signal_qos = QoSProfile(
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -34,15 +35,6 @@ class OdometryNode(Node):
             )
         self.tf_broadcaster = TransformBroadcaster(self)
 
-    def on_bag_ready_callback(self, msg: String):
-        if msg.data == 'ready' and not self.is_registered:
-            self.get_logger().info('Local bag reader is ready — subscribing to topics_info')
-            self.create_subscription(
-                String, 'topics_info',
-                self.on_topics_info_callback,
-                self.signal_qos
-                )
-
     def on_topics_info_callback(self, msg: String):
         if self.is_registered:
             return
@@ -53,19 +45,19 @@ class OdometryNode(Node):
             self.get_logger().error(f"Failed to parse topics_info JSON: {e}")
             return
 
-        odom_type_strings = ('nav_msgs/msg/Odometry', 'nav_msgs/Odometry', 'nav_msgs/msg/Odometry')
+        odom_type_strings = ('nav_msgs/msg/{self.odom_type}', 'nav_msgs/{self.odom_type}')
         found = False
         for topic_info in self.available_topics:
             name = topic_info.get('name', '')
-            typ = topic_info.get('type', '')
-            if typ in odom_type_strings or 'Odometry' in typ:
+            type = topic_info.get('type', '')
+            if type in odom_type_strings or self.odom_type in type:
                 self.pose_topic = name
                 found = True
-                self.get_logger().info(f"Found ground truth topic: {self.pose_topic}")
+                self.get_logger().info(f"Found {self.mode} topic: {self.pose_topic}")
                 break
 
         if not found:
-            self.get_logger().warn('No odometry topic found in topics_info. Received: ' + str(self.available_topics))
+            self.get_logger().warn(f'No {self.odom_type} topic found in topics_info. Received: ' + str(self.available_topics))
             return
 
         self.is_registered = True
@@ -73,16 +65,25 @@ class OdometryNode(Node):
         self.create_subscription(
             Odometry,
             self.pose_topic,
-            self.node_pose_callback,
+            self.pose_callback,
             self.data_qos
             )
 
         self.odom_publisher = self.create_publisher(
             PoseWithCovarianceStamped,
-            'gt_viz_pose', self.data_qos
+            f'{self.mode}_viz_pose', self.data_qos
             )
 
         self.register_with_sync_node()
+
+    def on_bag_ready_callback(self, msg: String):
+        if msg.data == 'ready' and not self.is_registered:
+            self.get_logger().info('Local bag reader is ready — subscribing to topics_info')
+            self.create_subscription(
+                String, 'topics_info',
+                self.on_topics_info_callback,
+                self.signal_qos
+                )
 
     def register_with_sync_node(self):
         self.reg_client = self.create_client(Trigger, '/register_ready')
@@ -116,19 +117,3 @@ class OdometryNode(Node):
         if not self.is_running:
             self.is_running = True
             self.get_logger().info('Start signal received. Processing data.')
-
-    def publish_odometry(self, pose_msg: PoseWithCovarianceStamped, child_frame_id: str):
-        if not self.is_running:
-            return
-
-        # Publish the standardized pose message
-        self.pose_publisher.publish(pose_msg)
-
-        # Broadcast the TF transform
-        t = TransformStamped()
-        t.header = pose_msg.header
-        t.header.frame_id = "world"
-        t.child_frame_id = f"{self.get_namespace().strip('/')}/{child_frame_id}"
-        t.transform.translation = pose_msg.pose.pose.position
-        t.transform.rotation = pose_msg.pose.pose.orientation
-        self.tf_broadcaster.sendTransform(t)

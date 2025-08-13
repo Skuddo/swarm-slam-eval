@@ -7,9 +7,12 @@ from geometry_msgs.msg import TransformStamped
 class GroundTruthNode(OdometryNode):
     def __init__(self):
         super().__init__('ground_truth_node')
+        self.odom_type = 'Odometry'
+        self.mode = 'gt'
         self.get_logger().info('GroundTruthNode initialized, waiting for bag reader status...')
 
-    def node_pose_callback(self, msg: PoseWithCovarianceStamped):
+
+    def pose_callback(self, msg: PoseWithCovarianceStamped):
         if not self.is_running:
             return
 
