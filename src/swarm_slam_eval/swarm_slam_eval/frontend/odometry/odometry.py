@@ -5,7 +5,7 @@ from std_srvs.srv import Trigger
 from rclpy.node import Node
 from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from ..qos_profiles import SIGNAL_QOS, DATA_QOS
+from swarm_slam_eval.qos_profiles import SIGNAL_QOS, DATA_QOS
 
 class OdometryNode(Node):
     def __init__(self, node_name):

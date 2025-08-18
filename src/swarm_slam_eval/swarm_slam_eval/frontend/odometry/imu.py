@@ -5,7 +5,7 @@ from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from scipy.spatial.transform import Rotation
 from .odometry import OdometryNode
-from ..qos_profiles import DATA_QOS
+from swarm_slam_eval.qos_profiles import DATA_QOS
 
 GRAVITY = 9.80665 
 
