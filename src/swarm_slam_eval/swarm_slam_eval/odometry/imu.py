@@ -1,21 +1,21 @@
 import rclpy
 import numpy as np
-from .odometry import OdometryNode
 from std_msgs.msg import String
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from scipy.spatial.transform import Rotation
+from .odometry import OdometryNode
+from ..qos_profiles import DATA_QOS
 
 GRAVITY = 9.80665 
 
 class ImuNode(OdometryNode):
     def __init__(self):
-        # Call parent to set up QoS, start signal sub, etc.
         super().__init__('imu_node')
         self.odom_type = 'Imu'
         self.mode = 'imu'
         self.msg_type = Imu
-        # --- Child-Specific State for IMU Integration ---
+
         self.position = np.array([0.0, 0.0, 0.0])
         self.velocity = np.array([0.0, 0.0, 0.0])
         self.orientation = None
@@ -24,16 +24,17 @@ class ImuNode(OdometryNode):
         self.initial_pose_sub = self.create_subscription(
             PoseWithCovarianceStamped,
             'gt_vis_pose',
-            self._initial_pose_callback,
-            self.data_qos
+            self.initialPoseCallback,
+            DATA_QOS
         )
 
         self.get_logger().info('ImuNode waiting for initial pose from gt_vis_pose...')
 
-    def on_topics_info_callback(self, msg: String):
-        super().on_topics_info_callback(msg)
+    def topicInfoCallback(self, msg: String):
+        super().topicInfoCallback(msg)
 
-    def _initial_pose_callback(self, msg: PoseWithCovarianceStamped):
+    # Initial pose callback used to set the 
+    def initialPoseCallback(self, msg: PoseWithCovarianceStamped):
         if not self.is_initialized:
             pos = msg.pose.pose.position
             self.position = np.array([pos.x, pos.y, pos.z])
@@ -46,11 +47,11 @@ class ImuNode(OdometryNode):
             self.get_logger().info(f"IMU odometry initialized to start pose: ({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f})")
             self.get_logger().info(f"and orientation: ({o.x:.2f}, {o.y:.2f}, {o.z:.2f})")
             
-            # Destroy the subscription so this callback doesn't run again
             self.destroy_subscription(self.initial_pose_sub)
-            self.register_self()
+            self.register()
 
-    def pose_callback(self, msg: Imu):
+    # basic IMU pose calculation, no filters no nothing
+    def poseCallback(self, msg: Imu):
         if not self.is_initialized or not self.is_running:
             return
 
@@ -67,7 +68,6 @@ class ImuNode(OdometryNode):
         q = self.orientation
         current_rotation = Rotation.from_quat([q.x, q.y, q.z, q.w])
 
-        # 2. Get the body-frame acceleration and remove gravity
         body_accel = np.array([
             msg.linear_acceleration.x,
             msg.linear_acceleration.y,

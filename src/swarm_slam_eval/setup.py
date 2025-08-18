@@ -25,6 +25,7 @@ setup(
             'sync_node = swarm_slam_eval.sync:main',
             'ground_truth_node = swarm_slam_eval.odometry.ground_truth:main',
             'imu_node = swarm_slam_eval.odometry.imu:main',
+            'pose_graph_node = swarm_slam_eval.evaluation.pose_graph:main',
         ],
     },
 )

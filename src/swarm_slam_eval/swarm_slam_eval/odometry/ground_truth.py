@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import rclpy
 from .odometry import OdometryNode
 from nav_msgs.msg import Odometry
@@ -13,8 +12,8 @@ class GroundTruthNode(OdometryNode):
 
         self.get_logger().info('GroundTruthNode initialized, waiting for bag reader status...')
 
-
-    def pose_callback(self, msg: PoseWithCovarianceStamped):
+    # Callback function that receives the gt pose from topic and publishes it
+    def poseCallback(self, msg: PoseWithCovarianceStamped):
         if not self.is_running:
             return
 

@@ -55,3 +55,4 @@ build
 install
 src/*.gv
 src/*.pdf
+results/*

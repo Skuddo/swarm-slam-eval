@@ -2,13 +2,14 @@ import os
 import sys
 import subprocess
 import yaml
-from ament_index_python.packages import get_package_share_directory
+import launch.logging
+from datetime import datetime
 from launch import LaunchDescription
 from launch_ros.actions import Node, PushRosNamespace
 from launch.actions import DeclareLaunchArgument, GroupAction, OpaqueFunction, Shutdown, ExecuteProcess
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
-import launch.logging
+from ament_index_python.packages import get_package_share_directory
 
 nav_modes = {
     "imu": {
@@ -29,6 +30,7 @@ def launch_setup(context, *args, **kwargs):
     sim_rate = float(LaunchConfiguration('sim_rate').perform(context))
     use_sim_time = bool(LaunchConfiguration('use_sim_time').perform(context))
     nav_mode = str(LaunchConfiguration('nav_mode').perform(context))
+    update_time = float(LaunchConfiguration('update_time').perform(context))
 
     try:
         pkg_share = get_package_share_directory('swarm_slam_eval')
@@ -91,14 +93,20 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"Failed to generate RViz config file via script: {e}")
         return [Shutdown()]
     
+    results_base_path = os.path.join(project_root, 'results')
+    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_folder_name = f"{timestamp_str}_{dataset}_{num_robots}robots_{nav_mode}"
+    run_specific_path = os.path.join(results_base_path, run_folder_name)
+
     # Pack nodes
     actions_to_launch = []
     for i in range(1, num_robots + 1):
         bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i}')
 
         nav_nodes = []
+        graph_nodes = []
         for mode in nav_modes:
-            node = Node(
+            nav_node = Node(
                 package='swarm_slam_eval',
                 executable=f"{mode}_node",
                 name=mode,
@@ -107,7 +115,22 @@ def launch_setup(context, *args, **kwargs):
                     'use_sim_time': use_sim_time
                 }],
             )
-            nav_nodes.append(node)
+            nav_nodes.append(nav_node)
+
+            graph_node = Node(
+                package='swarm_slam_eval',
+                executable='pose_graph_node',
+                name=f'{mode}_graph_saver',
+                parameters=[{
+                    'results_base_path': run_specific_path,
+                    'graph_name': mode,
+                    'dataset': dataset,
+                    'dataset_sequence': sequence,
+                    'use_sim_time': use_sim_time,
+                    'update_time' : update_time
+                }]
+            )
+            graph_nodes.append(graph_node)
 
         robot_group = GroupAction([
             PushRosNamespace(f'r{i}'),
@@ -123,7 +146,8 @@ def launch_setup(context, *args, **kwargs):
                     'is_clock_publisher': (i == 1)
                 }],
             ),
-            *nav_nodes 
+            *nav_nodes,
+            *graph_nodes 
         ])
         actions_to_launch.append(robot_group)
 
@@ -174,6 +198,8 @@ def generate_launch_description():
                               description='Use simulation (bag) time'),
         DeclareLaunchArgument('nav_mode', default_value='imu',
                               description='What to use for pose calculation'),
+        DeclareLaunchArgument('update_time', default_value='5.0',
+                              description='How often (in seconds) the evaluator saves checkpoints'),
         
         OpaqueFunction(function=launch_setup)
     ])
