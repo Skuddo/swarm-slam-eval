@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
 import os
 import argparse
 
+# Based on the provided arguments create the config file for rviz and save it
 def generate_rviz_config(num_robots: int, initial_x: float, initial_y: float, output_path: str, nav_mode: str):
-    """
-    Generates an RViz configuration file and saves it to the specified path.
-    """
     rviz_content = f"""
 Panels:
   - Class: rviz_common/Displays
@@ -75,12 +72,28 @@ Visualization Manager:
     print(f"Successfully generated RViz config at {output_path}")
 
 if __name__ == '__main__':
+    # Arg parsing
     parser = argparse.ArgumentParser(description='Generate an RViz config file for multi-robot visualization.')
-    parser.add_argument('--num-robots', type=int, required=True)
-    parser.add_argument('--initial-x', type=float, required=True)
-    parser.add_argument('--initial-y', type=float, required=True)
-    parser.add_argument('--nav-mode', type=str, required=True)
-    parser.add_argument('--output-path', type=str, required=True)
+    parser.add_argument(
+      '--num-robots', type=int, required=True,
+      help="how many robots"     
+      )
+    parser.add_argument(
+      '--initial-x', type=float, required=True,
+      help="X starting coordinate for the first robot"     
+      )
+    parser.add_argument(
+      '--initial-y', type=float, required=True,
+      help="Y starting coordinate for the first robot"
+      )
+    parser.add_argument(
+      '--nav-mode', type=str, required=True,
+      help="Which secondary pose source to use"     
+      )
+    parser.add_argument(
+      '--output-path', type=str, required=True,
+      help="Where the config to be used will be located"     
+      )
     args = parser.parse_args()
 
     generate_rviz_config(args.num_robots, args.initial_x, args.initial_y, args.output_path, args.nav_mode)

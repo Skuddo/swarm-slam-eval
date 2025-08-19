@@ -31,6 +31,7 @@ def launch_setup(context, *args, **kwargs):
     use_sim_time = bool(LaunchConfiguration('use_sim_time').perform(context))
     nav_mode = str(LaunchConfiguration('nav_mode').perform(context))
     update_time = float(LaunchConfiguration('update_time').perform(context))
+    sensor_type = str(LaunchConfiguration('sensor_type').perform(context))
 
     try:
         pkg_share = get_package_share_directory('swarm_slam_eval')
@@ -200,6 +201,8 @@ def generate_launch_description():
                               description='What to use for pose calculation'),
         DeclareLaunchArgument('update_time', default_value='5.0',
                               description='How often (in seconds) the evaluator saves checkpoints'),
+        DeclareLaunchArgument('sensor_type',
+                              description='What frontend sensor is used', default_value=''),
         
         OpaqueFunction(function=launch_setup)
     ])
