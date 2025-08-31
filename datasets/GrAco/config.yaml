@@ -6,7 +6,7 @@ ground:
       src: /gnss/ground_truth
       type: nav_msgs/msg/Odometry
       hz: 200
-    gps:
+    gps/fix:
       src: /gnss/gps
       type: sensor_msgs/msg/NavSatFix
       hz: 10
@@ -14,7 +14,7 @@ ground:
       src: /gnss/imu
       type: sensor_msgs/msg/Imu
       hz: 125
-    lidar:
+    pointcloud:
       src: /velodyne/points
       type: sensor_msgs/msg/PointCloud2
       hz: 10

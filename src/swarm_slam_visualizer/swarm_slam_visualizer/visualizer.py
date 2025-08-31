@@ -34,19 +34,19 @@ class VisualizerNode(Node):
         # Path data structures
         self.latest_gt_poses = {} 
         self.latest_nav_poses = {} 
-        self.gt_paths = {i: [] for i in range(1, self.num_robots + 1)}
-        self.nav_paths = {i: [] for i in range(1, self.num_robots + 1)}
+        self.gt_paths = {i: [] for i in range(self.num_robots)}
+        self.nav_paths = {i: [] for i in range(self.num_robots)}
         
         # Marker publishers dict
         self.marker_publishers = {}
-        for i in range(1, self.num_robots + 1):
+        for i in range(self.num_robots):
             self.marker_publishers[f"gt{i}"] = self.create_publisher(
                 Marker, f'/r{i}/gt_vis_marker', 10)
             self.marker_publishers[f"{self.nav_mode}{i}"] = self.create_publisher(
                 Marker, f'/r{i}/{self.nav_mode}_vis_marker', 10)
             
         # GT and nav pose
-        for i in range(1, self.num_robots + 1):
+        for i in range(self.num_robots):
             rid = i
             self.create_subscription(
                 PoseWithCovarianceStamped,
@@ -89,7 +89,7 @@ class VisualizerNode(Node):
             path_marker.points = self.gt_paths[rid]
             
             path_marker.scale.x = 0.3
-            path_marker.color = COLORS[(rid - 1) % len(COLORS)]
+            path_marker.color = COLORS[rid % len(COLORS)]
             path_marker.lifetime = Duration(seconds=0).to_msg()
             publisher.publish(path_marker)
 
@@ -109,7 +109,7 @@ class VisualizerNode(Node):
             
             path_marker.scale.x = 0.2
             color_offset = len(COLORS) // 2 
-            path_marker.color = COLORS[(rid - 1 + color_offset) % len(COLORS)]
+            path_marker.color = COLORS[(rid + color_offset) % len(COLORS)]
             path_marker.lifetime = Duration(seconds=0).to_msg()
             publisher.publish(path_marker)
 

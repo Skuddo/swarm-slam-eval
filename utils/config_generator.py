@@ -46,7 +46,7 @@ Visualization Manager:
       Enabled: true
 """
 
-    for i in range(1, num_robots + 1):
+    for i in range(num_robots):
         namespace = f"r{i}"
         rviz_content += f"""
     - Class: rviz_default_plugins/Marker

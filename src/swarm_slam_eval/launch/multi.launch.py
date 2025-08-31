@@ -6,18 +6,17 @@ import launch.logging
 from datetime import datetime
 from launch import LaunchDescription
 from launch_ros.actions import Node, PushRosNamespace
-from launch.actions import DeclareLaunchArgument, GroupAction, OpaqueFunction, Shutdown, ExecuteProcess
+from launch.actions import (DeclareLaunchArgument, GroupAction, OpaqueFunction,
+                            Shutdown, ExecuteProcess, IncludeLaunchDescription)
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
+from std_msgs.msg import Empty
 
-nav_modes = {
-    "imu": {
-        
-    },
-    # "vins": {
-        
-    # }
+nav_modes_config = {
+    "imu"   : {},
+    "cslam" : {}
 }
 
 # This is the main orchestrator function. It runs at launch time and sets everything up.
@@ -52,8 +51,12 @@ def launch_setup(context, *args, **kwargs):
     
     # prepare list od odometry nodes based on launch config
     # ground truth should always be there, default: "imu"
-    nav_modes = ['ground_truth']
-    nav_modes.append(nav_mode)
+    nav_modes_to_launch = ['ground_truth']
+    if nav_mode in nav_modes_config:
+        nav_modes_to_launch.append(nav_mode)
+    else:
+        logger.error(f"Navigation mode '{nav_mode}' is not recognized. Shutting down.")
+        return [Shutdown()]
     
     # Pre-scan the bag file to get initial coordinates ---
     try:
@@ -101,57 +104,103 @@ def launch_setup(context, *args, **kwargs):
 
     # Pack nodes
     actions_to_launch = []
-    for i in range(1, num_robots + 1):
-        bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i}')
+    
+    if nav_mode == 'cslam':
+        cslam_launch_file = os.path.join(pkg_share, 'launch', 'cslam.launch.py')
+        cslam_config_path = os.path.join(
+            get_package_share_directory("cslam_experiments"), "config", "graco_lidar.yaml")
 
-        nav_nodes = []
-        graph_nodes = []
-        for mode in nav_modes:
-            nav_node = Node(
-                package='swarm_slam_eval',
-                executable=f"{mode}_node",
-                name=mode,
-                output='screen',
-                parameters=[{
-                    'use_sim_time': use_sim_time
-                }],
-            )
-            nav_nodes.append(nav_node)
+        cslam_system = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(cslam_launch_file),
+            launch_arguments={
+                'num_robots': str(num_robots),
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'cslam_config_file': cslam_config_path,
+            }.items()
+        )
+        actions_to_launch.append(cslam_system)
 
-            graph_node = Node(
-                package='swarm_slam_eval',
-                executable='pose_graph_node',
-                name=f'{mode}_graph_saver',
-                parameters=[{
-                    'results_base_path': run_specific_path,
-                    'graph_name': mode,
-                    'dataset': dataset,
-                    'dataset_sequence': sequence,
-                    'use_sim_time': use_sim_time,
-                    'update_time' : update_time
-                }]
-            )
-            graph_nodes.append(graph_node)
+        # GLOBAL graph saver
+        global_graph_saver = Node(
+            package='swarm_slam_eval',
+            executable='pose_graph_node',
+            name='cslam_global_graph_saver',
+            output='screen',
+            parameters=[{
+                'results_base_path': run_specific_path,
+                'graph_name': 'cslam_global', # Unique name to trigger global logic
+                'use_sim_time': use_sim_time,
+                'update_time': update_time
+            }]
+        )
+        actions_to_launch.append(global_graph_saver)
+        
+    # Per robot nodes
+    for i in range(num_robots):
+        bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i+1}')
 
-        robot_group = GroupAction([
-            PushRosNamespace(f'r{i}'),
+        per_robot_nodes = [
             Node(
                 package='swarm_slam_eval',
                 executable='bag_reader_node',
                 name='bag_reader',
-                output='screen',
                 parameters=[{
                     'bag_path': bag_path,
                     'sim_rate': sim_rate,
                     'use_sim_time': use_sim_time,
-                    'is_clock_publisher': (i == 1)
+                    'is_clock_publisher': (i == 0)
                 }],
             ),
-            *nav_nodes,
-            *graph_nodes 
+            Node(
+                package='swarm_slam_eval',
+                executable='pose_graph_node',
+                name='ground_truth_graph_saver',
+                parameters=[{
+                    'results_base_path': run_specific_path,
+                    'graph_name': 'ground_truth',
+                    'use_sim_time': use_sim_time,
+                    'update_time' : update_time
+                }]
+            ),
+            # Add the ground_truth_node adapter for visualization
+            Node(
+                package='swarm_slam_eval',
+                executable='ground_truth_node',
+                name='ground_truth',
+                parameters=[{'use_sim_time': use_sim_time}],
+            )
+        ]
+
+        # If in cslam mode, add the individual C-SLAM saver and adapter for this robot
+        if nav_mode == 'cslam':
+            per_robot_nodes.append(
+                Node(
+                    package='swarm_slam_eval',
+                    executable='pose_graph_node',
+                    name='cslam_graph_saver', # This becomes /rX/cslam_graph_saver
+                    parameters=[{
+                        'results_base_path': run_specific_path,
+                        'graph_name': 'cslam', # Name for individual logic
+                        'use_sim_time': use_sim_time,
+                        'update_time' : update_time
+                    }]
+                )
+            )
+            per_robot_nodes.append(
+                Node(
+                    package='swarm_slam_eval',
+                    executable='cslam_node', # The adapter for visualization
+                    name='cslam',
+                    parameters=[{'use_sim_time': use_sim_time}],
+                )
+            )
+
+        robot_group = GroupAction([
+            PushRosNamespace(f'r{i}'),
+            *per_robot_nodes
         ])
         actions_to_launch.append(robot_group)
-
+        
     # Sync node
     actions_to_launch.append(Node(
         package='swarm_slam_eval',
@@ -197,7 +246,7 @@ def generate_launch_description():
                               description='Whether to launch visualization nodes'),
         DeclareLaunchArgument('use_sim_time', default_value='true',
                               description='Use simulation (bag) time'),
-        DeclareLaunchArgument('nav_mode', default_value='imu',
+        DeclareLaunchArgument('nav_mode', default_value='cslam',
                               description='What to use for pose calculation'),
         DeclareLaunchArgument('update_time', default_value='5.0',
                               description='How often (in seconds) the evaluator saves checkpoints'),

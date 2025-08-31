@@ -56,3 +56,4 @@ install
 src/*.gv
 src/*.pdf
 results/*
+src/results/*
