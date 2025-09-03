@@ -66,7 +66,7 @@ class OdometryNode(Node):
             self.get_logger().error(f"Failed to parse topics_info JSON: {e}")
             return
 
-        odom_type_strings = ('nav_msgs/msg/{self.odom_type}', 'nav_msgs/{self.odom_type}')
+        odom_type_strings = (f'nav_msgs/msg/{self.odom_type}', f'nav_msgs/{self.odom_type}')
         found = False
         for topic_info in self.available_topics:
             name = topic_info.get('name', '')

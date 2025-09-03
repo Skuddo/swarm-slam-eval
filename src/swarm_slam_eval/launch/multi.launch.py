@@ -7,12 +7,11 @@ from datetime import datetime
 from launch import LaunchDescription
 from launch_ros.actions import Node, PushRosNamespace
 from launch.actions import (DeclareLaunchArgument, GroupAction, OpaqueFunction,
-                            Shutdown, ExecuteProcess, IncludeLaunchDescription)
+                            Shutdown, ExecuteProcess, IncludeLaunchDescription, TimerAction)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
-from std_msgs.msg import Empty
 
 nav_modes_config = {
     "imu"   : {},
@@ -31,6 +30,7 @@ def launch_setup(context, *args, **kwargs):
     nav_mode = str(LaunchConfiguration('nav_mode').perform(context))
     update_time = float(LaunchConfiguration('update_time').perform(context))
     sensor_type = str(LaunchConfiguration('sensor_type').perform(context))
+    clock_wait_timeout = float(LaunchConfiguration('clock_wait_timeout').perform(context))
 
     try:
         pkg_share = get_package_share_directory('swarm_slam_eval')
@@ -104,8 +104,22 @@ def launch_setup(context, *args, **kwargs):
 
     # Pack nodes
     actions_to_launch = []
+
+    # Sync node
+    actions_to_launch.append(Node(
+        package='swarm_slam_eval',
+        executable='sync_node',
+        name='sync_node',
+        output='screen',
+        parameters=[{
+            'num_robots': LaunchConfiguration('num_robots'),
+            'use_sim_time': use_sim_time
+            }]
+    ))
     
+    # Check if running cslam
     if nav_mode == 'cslam':
+        # Add cslam launch file to actions
         cslam_launch_file = os.path.join(pkg_share, 'launch', 'cslam.launch.py')
         cslam_config_path = os.path.join(
             get_package_share_directory("cslam_experiments"), "config", "graco_lidar.yaml")
@@ -118,9 +132,8 @@ def launch_setup(context, *args, **kwargs):
                 'cslam_config_file': cslam_config_path,
             }.items()
         )
-        actions_to_launch.append(cslam_system)
 
-        # GLOBAL graph saver
+        # Add cslam global graph saver to actions
         global_graph_saver = Node(
             package='swarm_slam_eval',
             executable='pose_graph_node',
@@ -128,18 +141,29 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
             parameters=[{
                 'results_base_path': run_specific_path,
-                'graph_name': 'cslam_global', # Unique name to trigger global logic
+                'graph_name': 'cslam_global',
                 'use_sim_time': use_sim_time,
-                'update_time': update_time
+                'update_time': update_time,
+                'clock_wait_timeout': clock_wait_timeout
             }]
         )
-        actions_to_launch.append(global_graph_saver)
+
+        delayed_cslam_launch = TimerAction(
+            period=5.0,
+            actions=[
+                cslam_system,
+                global_graph_saver
+            ]
+        )
+
+        actions_to_launch.append(delayed_cslam_launch)
         
-    # Per robot nodes
+    # Per robot nodes/actions
     for i in range(num_robots):
         bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i+1}')
 
         per_robot_nodes = [
+            # Bag reader
             Node(
                 package='swarm_slam_eval',
                 executable='bag_reader_node',
@@ -148,9 +172,11 @@ def launch_setup(context, *args, **kwargs):
                     'bag_path': bag_path,
                     'sim_rate': sim_rate,
                     'use_sim_time': use_sim_time,
+                    'update_time':  update_time,
                     'is_clock_publisher': (i == 0)
                 }],
             ),
+            # Pose graph saver
             Node(
                 package='swarm_slam_eval',
                 executable='pose_graph_node',
@@ -159,10 +185,12 @@ def launch_setup(context, *args, **kwargs):
                     'results_base_path': run_specific_path,
                     'graph_name': 'ground_truth',
                     'use_sim_time': use_sim_time,
-                    'update_time' : update_time
+                    'update_time' : update_time,
+                    # pass clock wait so ground-truth saver doesn't race with /clock
+                    'clock_wait_timeout': clock_wait_timeout
                 }]
             ),
-            # Add the ground_truth_node adapter for visualization
+            # ground_truth_node adapter for visualization and evaluation
             Node(
                 package='swarm_slam_eval',
                 executable='ground_truth_node',
@@ -182,7 +210,9 @@ def launch_setup(context, *args, **kwargs):
                         'results_base_path': run_specific_path,
                         'graph_name': 'cslam', # Name for individual logic
                         'use_sim_time': use_sim_time,
-                        'update_time' : update_time
+                        'update_time' : update_time,
+                        # pass clock wait timeout parameter
+                        'clock_wait_timeout': clock_wait_timeout
                     }]
                 )
             )
@@ -200,18 +230,6 @@ def launch_setup(context, *args, **kwargs):
             *per_robot_nodes
         ])
         actions_to_launch.append(robot_group)
-        
-    # Sync node
-    actions_to_launch.append(Node(
-        package='swarm_slam_eval',
-        executable='sync_node',
-        name='sync_node',
-        output='screen',
-        parameters=[{
-            'num_robots': LaunchConfiguration('num_robots'),
-            'use_sim_time': use_sim_time
-            }]
-    ))
 
     # Visualizer node
     actions_to_launch.append(Node(
@@ -250,6 +268,9 @@ def generate_launch_description():
                               description='What to use for pose calculation'),
         DeclareLaunchArgument('update_time', default_value='5.0',
                               description='How often (in seconds) the evaluator saves checkpoints'),
+        # NEW: allow configuring how long savers/dumper wait for /clock
+        DeclareLaunchArgument('clock_wait_timeout', default_value='10.0',
+                              description='How long (s) to wait for /clock before falling back'),
         DeclareLaunchArgument('sensor_type',
                               description='What frontend sensor is used', default_value=''),
         

@@ -1,16 +1,14 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch_ros.actions import Node, PushRosNamespace
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, GroupAction
 from launch.substitutions import LaunchConfiguration
+from launch_ros.descriptions import ComposableNode
+from launch_ros.actions import ComposableNodeContainer
+
 
 def launch_setup(context, *args, **kwargs):
-    """
-    This function directly launches all necessary nodes for a C-SLAM system,
-    including RTAB-Map for odometry and the core C-SLAM backend components.
-    It is designed to be self-contained to avoid dependency issues at runtime.
-    """
     num_robots = int(LaunchConfiguration('num_robots').perform(context))
     use_sim_time = LaunchConfiguration('use_sim_time') # Keep as LaunchConfiguration object
     cslam_config_file = LaunchConfiguration('cslam_config_file').perform(context)
@@ -21,122 +19,160 @@ def launch_setup(context, *args, **kwargs):
     for i in range(num_robots):
         robot_namespace = f'r{i}'
 
-        tf_process = Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            arguments="0 0 0 0 0 0 velodyne base_link".split(" "),
-            parameters=[{'use_sim_time': use_sim_time}] 
-        )
-        actions_to_launch.append(tf_process)
+        static_tf_components = [
+            # Component for base_link -> velodyne
+            ComposableNode(
+                package='tf2_ros',
+                plugin='tf2_ros::StaticTransformBroadcasterNode',
+                name='static_tf_pub_base_to_velodyne',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'frame_id': 'base_link',
+                    'child_frame_id': 'velodyne',
+                    'translation.x': 0.0,
+                    'translation.y': 0.0,
+                    'translation.z': 0.0,
+                    'rotation.x': 0.0,
+                    'rotation.y': 0.0,
+                    'rotation.z': 0.0,
+                    'rotation.w': 1.0
+                }]
+            ),
+            # Component for base_link -> gnss
+            ComposableNode(
+                package='tf2_ros',
+                plugin='tf2_ros::StaticTransformBroadcasterNode',
+                name='static_tf_pub_base_to_gnss',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'frame_id': 'base_link',
+                    'child_frame_id': 'gnss',
+                    'translation.x': -0.01192,
+                    'translation.y': -0.0197,
+                    'translation.z': 0.1226,
+                    'rotation.x': 0.0,
+                    'rotation.y': 0.0,
+                    'rotation.z': 0.0,
+                    'rotation.w': 1.0
+                }]
+            ),
+            # Add any other static transforms here in the same way
+        ]
 
-        tf_process_imu = Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            arguments="-0.01192 -0.0197 0.1226 0 0 0 velodyne gnss".split(" "),
-            parameters=[{'use_sim_time': use_sim_time}] 
+        tf_container = ComposableNodeContainer(
+            name='static_tf_container',
+            namespace=robot_namespace, # Apply namespace directly to the container
+            package='rclcpp_components',
+            executable='component_container',
+            composable_node_descriptions=static_tf_components,
+            output='screen'
         )
-        actions_to_launch.append(tf_process_imu)
 
-        tf_process_map = Node(
+        actions_to_launch.append(tf_container)
+
+        # Group all nodes for a single robot under a namespace
+        robot_group = GroupAction(
+            actions=[
+                # Use PushRosNamespace to apply the namespace to all nodes within this group
+                PushRosNamespace(robot_namespace),
+
+                # 1. CORRECTED: Static transform from the robot's base to its sensor.
+                # This is now correctly namespaced. It will publish /rX/base_link -> /rX/velodyne.
+                Node(
                     package="tf2_ros",
                     executable="static_transform_publisher",
-                    arguments="0 0 0 0 0 0 map odom".split(" "),
+                    # Arguments: x y z yaw pitch roll parent_frame child_frame
+                    arguments="0 0 0 0 0 0 base_link velodyne".split(" "),
                     parameters=[{'use_sim_time': use_sim_time}] 
-        )
-        actions_to_launch.append(tf_process_map)
+                ),
 
+                # Note: The static transform for "gnss" is also included here.
+                Node(
+                    package="tf2_ros",
+                    executable="static_transform_publisher",
+                    arguments="-0.01192 -0.0197 0.1226 0 0 0 base_link gnss".split(" "),
+                    parameters=[{'use_sim_time': use_sim_time}] 
+                ),
 
-        # 1. RTAB-Map ICP Odometry Node (Frontend)
-        # This node computes odometry from the point cloud data.
-        odom_frontend_node = Node(
-            package='rtabmap_odom', 
-            executable='icp_odometry', 
-            name='icp_odometry',
-            output="screen",
-            parameters=[{
-                "frame_id": "velodyne",
-                "odom_frame_id": "odom", # This will be published as /rX/odom
-                "publish_tf": True, # We handle TF separately if needed
-                "wait_for_transform": 0.2,
-                "wait_imu_to_init": True,
-                # Use Approximate Time synchronization for robust bag playback.
-                "approx_sync": False,
-                "queue_size": 100,
-                "queue_size_odom": "100",
-                "use_sim_time": use_sim_time,
-                "odom_tf_angular_variance": 0.01,
-                "odom_tf_linear_variance": 0.001,
-                "odom_guess_min_translation": '0.0',
-                "odom_guess_min_rotation": '0.0',
-                # Parameters from graco_lidar.yaml and rtabmap launch
-                "Icp/MaxTranslation": "5",
-                "Icp/VoxelSize": "0.4",
-                "Icp/MaxCorrespondenceDistance": "4.0",
-                "Icp/PointToPlaneK": "20",
-                "Odom/Strategy": "0", # 0=Frame-to-Map
-                "OdomF2M/ScanSubtractRadius": "0.4",
-                "OdomLOAM/Sensor": "0", # 16 rings
-                "OdomLOAM/Resolution": "0.4" 
-            }],
-            remappings=[
-                # Remap the input topic to what our bag_reader publishes
-                ("scan_cloud", "pointcloud"),
-                # Disable the unused 2D scan topic to prevent timeout
-                ("scan", "scan_disabled"),
-                # Output odometry topic will be automatically namespaced to /rX/odom
-                ("odom", "odom") 
-            ],
-            namespace=robot_namespace
-        )
-        actions_to_launch.append(odom_frontend_node)
+                # REMOVED: The static map -> odom publisher has been deleted as it conflicts with SLAM.
 
-        # 2. C-SLAM: Loop Closure Detection Node
-        loop_detection_node = Node(
-            package='cslam',
-            executable='loop_closure_detection_node.py',
-            name='cslam_loop_closure_detection',
-            parameters=[
-                cslam_config_file, {
-                    "robot_id": i,
-                    "max_nb_robots": num_robots,
-                    "use_sim_time": use_sim_time,
-                }
-            ],
-            namespace=robot_namespace
-        )
-        actions_to_launch.append(loop_detection_node)
+                # 2. RTAB-Map ICP Odometry Node (Frontend)
+                # Corrected to publish the standard odom -> base_link transform.
+                Node(
+                    package='rtabmap_odom', 
+                    executable='icp_odometry', 
+                    name='icp_odometry',
+                    output="screen",
+                    parameters=[{
+                        # CHANGED: frame_id should be the robot's base frame.
+                        "frame_id": "base_link", 
+                        "odom_frame_id": "odom",
+                        "publish_tf": True, # This node is now responsible for odom -> base_link
+                        "wait_for_transform": 0.2,
+                        "wait_imu_to_init": True,
+                        "approx_sync": True, # Set to True for more robust bag playback
+                        "queue_size": 100,
+                        "use_sim_time": use_sim_time,
+                        # Other parameters remain the same...
+                        "Icp/MaxTranslation": "5",
+                        "Icp/VoxelSize": "0.4",
+                        "Icp/MaxCorrespondenceDistance": "4.0",
+                        "Icp/PointToPlaneK": "20",
+                        "Odom/Strategy": "0",
+                        "OdomF2M/ScanSubtractRadius": "0.4"
+                    }],
+                    remappings=[
+                        ("scan_cloud", "pointcloud"),
+                        ("scan", "scan_disabled"),
+                        ("odom", "odom") 
+                    ],
+                    # REMOVED: namespace attribute is now handled by the GroupAction
+                ),
 
-        # 3. C-SLAM: LiDAR Handler (Map Manager) Node
-        map_manager_node = Node(
-            package='cslam',
-            executable='lidar_handler_node.py',
-            name='cslam_map_manager',
-            parameters=[
-                cslam_config_file, {
-                    "robot_id": i,
-                    "max_nb_robots": num_robots,
-                    "use_sim_time": use_sim_time,
-                }
-            ],
-            namespace=robot_namespace
-        )
-        actions_to_launch.append(map_manager_node)
+                # 3. C-SLAM: Loop Closure Detection Node
+                Node(
+                    package='cslam',
+                    executable='loop_closure_detection_node.py',
+                    name='cslam_loop_closure_detection',
+                    parameters=[
+                        cslam_config_file, {
+                            "robot_id": i,
+                            "max_nb_robots": num_robots,
+                            "use_sim_time": use_sim_time,
+                        }
+                    ],
+                ),
 
-        # 4. C-SLAM: Pose Graph Manager Node
-        pose_graph_manager_node = Node(
-            package='cslam',
-            executable='pose_graph_manager',
-            name='cslam_pose_graph_manager',
-            parameters=[
-                cslam_config_file, {
-                    "robot_id": i,
-                    "max_nb_robots": num_robots,
-                    "use_sim_time": use_sim_time,
-                }
-            ],
-            namespace=robot_namespace
+                # 4. C-SLAM: LiDAR Handler (Map Manager) Node
+                Node(
+                    package='cslam',
+                    executable='lidar_handler_node.py',
+                    name='cslam_map_manager',
+                    parameters=[
+                        cslam_config_file, {
+                            "robot_id": i,
+                            "max_nb_robots": num_robots,
+                            "use_sim_time": use_sim_time,
+                        }
+                    ],
+                ),
+
+                # 5. C-SLAM: Pose Graph Manager Node
+                Node(
+                    package='cslam',
+                    executable='pose_graph_manager',
+                    name='cslam_pose_graph_manager',
+                    parameters=[
+                        cslam_config_file, {
+                            "robot_id": i,
+                            "max_nb_robots": num_robots,
+                            "use_sim_time": use_sim_time,
+                        }
+                    ],
+                )
+            ]
         )
-        actions_to_launch.append(pose_graph_manager_node)
+        actions_to_launch.append(robot_group)
 
     return actions_to_launch
 

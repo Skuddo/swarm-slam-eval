@@ -1,284 +1,230 @@
 #!/usr/bin/env python3
 import os
-import copy
-import threading
-from typing import List, Dict, Tuple
-
 import rclpy
 from rclpy.node import Node
-from rclpy.time import Time
-from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy
-
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from cslam_common_interfaces.msg import PoseGraph
-from cslam_common_interfaces.msg import OptimizationResult  # if available in your env
-from swarm_slam_eval.qos_profiles import DATA_QOS, CSLAM_QOS
-from rclpy.exceptions import ParameterAlreadyDeclaredException
+from cslam_common_interfaces.msg import PoseGraph, RobotIds
+from swarm_slam_eval.qos_profiles import CSLAM_QOS, DATA_QOS
+from builtin_interfaces.msg import Time as MsgTime
+from rclpy.time import Time as RclpyTime
+from typing import List, Tuple, Union
 
 class PoseGraphNode(Node):
+
     def __init__(self):
         super().__init__('pose_graph_node')
-
-        # Determine namespace-based robot id
-        namespace = self.get_namespace()
-        if namespace and namespace not in ('', '/'):
-            # e.g. '/r0' -> 0
-            ns_digits = ''.join(filter(str.isdigit, namespace.lstrip('/')))
-            self.robot_id = int(ns_digits) if ns_digits else -1
-        else:
-            self.robot_id = -1  # global node
 
         # Parameters
         self.declare_parameter('results_base_path', '')
         self.declare_parameter('graph_name', '')
         self.declare_parameter('update_time', 5.0)
+        self.declare_parameter('clock_wait_timeout', 5.0)
 
         self.results_base_path = self.get_parameter('results_base_path').get_parameter_value().string_value
         self.graph_name = self.get_parameter('graph_name').get_parameter_value().string_value
-        self.t_interval = self.get_parameter('update_time').get_parameter_value().double_value
+        self.update_interval = self.get_parameter('update_time').get_parameter_value().double_value
+        self.use_sim_time = self.get_parameter('use_sim_time').get_parameter_value().bool_value
+        self.clock_wait_timeout = self.get_parameter('clock_wait_timeout').get_parameter_value().double_value
 
-        # Internal state
-        self.lock = threading.Lock()
-        self.vertices: List[dict] = []  # {'id':..., 'stamp':TimeMsg, 'pose':[x,y,z,qx,qy,qz,qw], 'robot_id':int}
-        self.edges: List[dict] = []     # {'id_from':..., 'id_to':..., 'transform':[x,y,z,qx,qy,qz,qw]}
-        self.node_id_counter = 0
-        self.latest_pose_timestamp = None
-        self.start_sim_time = None
+        ns = self.get_namespace().strip('/')
+        self.robot_id = int(''.join(filter(str.isdigit, ns))) if ns else -1
 
-        # Prepare storage path
-        # robot_dir will include rX subfolder for per-robot nodes; global node has robot_id == -1
-        robot_subdir = f"r{self.robot_id}" if self.robot_id != -1 else ""
-        self.robot_dir = os.path.join(self.results_base_path, robot_subdir, self.graph_name)
-        os.makedirs(self.robot_dir, exist_ok=True)
+        # Data containers
+        self.vertices: List[dict] = []
+        self.edges: List[dict] = []
+        self.gt_pose_counter = 0
+        self.last_saved_tick = -1  # Tracks the last saved time interval
 
-        # Timer for periodic save (only if t_interval > 0)
-        if self.t_interval > 0:
-            # create save callback function BEFORE we register timer or subscriptions (avoid AttributeError)
-            self.save_timer = self.create_timer(self.t_interval, self.save_callback)
+        # start_time: builtin_interfaces.msg.Time (set when first stamp arrives)
+        self.start_time: Union[MsgTime, None] = None
 
-        # Register subscriptions depending on graph type
-        # Per-robot C-SLAM optimizer estimates (OptimizationResult)
-        if self.graph_name == 'cslam':
-            # Use provided CSLAM_QOS if available; fallback to transient_local QoS for late-join
-            try:
-                qos = CSLAM_QOS
-            except Exception:
-                qos = QoSProfile(depth=10)
-                qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-                qos.history = HistoryPolicy.KEEP_LAST
+        # Create output directory
+        robot_subdir = f"r{self.robot_id}" if self.robot_id != -1 and self.graph_name != 'cslam_global' else ""
+        self.output_dir = os.path.join(self.results_base_path, robot_subdir, self.graph_name)
+        os.makedirs(self.output_dir, exist_ok=True)
 
-            # subscribe to namespaced topic (this node is already in the namespace)
-            self.create_subscription(OptimizationResult, 'cslam/optimized_estimates', self.cslam_optimization_callback, qos)
-            self.get_logger().info(f"PER-ROBOT CSLAM SAVER for r{self.robot_id} started. Subscribing to 'cslam/optimized_estimates'.")
-
-        # Global C-SLAM pose graph publisher (PoseGraph)
+        # Subscriptions and publishers depending on graph_name
+        if self.graph_name == 'ground_truth':
+            self.create_subscription(PoseWithCovarianceStamped, 'gt_vis_pose', self.gt_callback, DATA_QOS)
+            self.get_logger().info(f"Saver started in 'ground_truth' mode for r{self.robot_id} (output: {self.output_dir})")
+        elif self.graph_name == 'cslam':
+            self.trigger_pub = self.create_publisher(RobotIds, 'cslam/get_pose_graph', 10)
+            self.create_subscription(PoseGraph, '/cslam/pose_graph', self.local_cslam_graph_callback, CSLAM_QOS)
+            self.create_timer(self.update_interval, self.request_local_cslam_graph)
+            self.get_logger().info(f"Saver started in 'cslam' (local) mode for r{self.robot_id}.")
         elif self.graph_name == 'cslam_global':
-            try:
-                qos = CSLAM_QOS
-            except Exception:
-                qos = QoSProfile(depth=10)
-                qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-                qos.history = HistoryPolicy.KEEP_LAST
+            self.create_subscription(PoseGraph, '/cslam/pose_graph', self.global_cslam_graph_callback, CSLAM_QOS)
+            self.get_logger().info("Saver started in 'cslam_global' mode.")
 
-            # Global topic is at root '/cslam/pose_graph'
-            self.create_subscription(PoseGraph, '/cslam/pose_graph', self.cslam_global_graph_callback, qos)
-            self.get_logger().info("GLOBAL CSLAM SAVER started. Subscribing to '/cslam/pose_graph'.")
-
-        # Ground truth saver — subscribe to visualization pose topic
-        elif self.graph_name == 'ground_truth':
-            self.create_subscription(PoseWithCovarianceStamped, 'gt_vis_pose', self.odometry_callback, DATA_QOS)
-            self.get_logger().info(f"GROUND TRUTH SAVER for r{self.robot_id} started. Subscribing to 'gt_vis_pose'.")
-
-        # Ensure we save on shutdown
+        # Make sure we save final state on shutdown
         rclpy.get_default_context().on_shutdown(self.save_on_shutdown)
 
-    # ---------------------------
+    # -------------------------
     # Callbacks
-    # ---------------------------
-    def cslam_optimization_callback(self, msg: OptimizationResult):
-        """Handle OptimizationResult: msg.estimates is a list of per-keyframe estimates."""
-        with self.lock:
-            # stamp: OptimizationResult may not have header -> use current time as best-effort
-            current_stamp = self.get_clock().now().to_msg()
-            if self.start_sim_time is None:
-                self.start_sim_time = current_stamp
-            self.latest_pose_timestamp = current_stamp
+    # -------------------------
+    def gt_callback(self, msg: PoseWithCovarianceStamped):
+        try:
+            p, q = msg.pose.pose.position, msg.pose.pose.orientation
+            stamp_msg = msg.header.stamp
 
-            # debug summary
-            try:
-                robot_ids = [int(n.key.robot_id) for n in msg.estimates]
-            except Exception:
-                robot_ids = None
-            self.get_logger().debug(f"[cslam_opt_cb] Received {len(msg.estimates)} estimates; robot_ids={robot_ids}; self.robot_id={self.robot_id}")
+            # initialize start_time if unset
+            if self.start_time is None:
+                self.start_time = stamp_msg
+                self.get_logger().info(f"start_time initialized from GT stamp: {self.start_time.sec}.{self.start_time.nanosec}")
 
-            # build vertex list only for this robot (use key.robot_id and key.keyframe_id)
-            new_vertices = []
-            for node in msg.estimates:
-                try:
-                    key_robot = int(node.key.robot_id)
-                    kfid = int(node.key.keyframe_id)
-                    p = node.pose.position
-                    q = node.pose.orientation
-                except Exception:
-                    # skip malformed entries
-                    continue
+            self.vertices.append({
+                'id': self.gt_pose_counter,
+                'stamp': stamp_msg,
+                'pose': [p.x, p.y, p.z, q.x, q.y, q.z, q.w]
+            })
+            self.gt_pose_counter += 1
 
-                if key_robot == self.robot_id:
-                    new_vertices.append({
-                        'id': kfid,
-                        'stamp': current_stamp,
-                        'pose': [p.x, p.y, p.z, q.x, q.y, q.z, q.w],
-                        'robot_id': key_robot
-                    })
+            # Check if we need to save at interval
+            self.check_and_save_at_interval(stamp_msg)
 
-            # Merge policy: if there are new vertices for this robot, replace; otherwise keep previous
-            if new_vertices:
-                self.vertices = new_vertices
-                self.edges = []  # optimizer currently doesn't publish edges here (use global graph for edges)
+        except Exception as e:
+            self.get_logger().error(f"Exception in gt_callback: {e}")
+
+    def global_cslam_graph_callback(self, msg: PoseGraph):
+        reception_time = self.get_clock().now().to_msg()
+        if self.start_time is None:
+            self.start_time = reception_time
+            self.get_logger().debug(f"start_time initialized from global graph reception: {self.start_time.sec}.{self.start_time.nanosec}")
+
+        self.get_logger().debug(f"Received global graph update with {len(msg.values)} vertices.")
+        self.vertices, self.edges = self.parse_graph_msg(msg, reception_time, is_global=True)
+        self.check_and_save_at_interval(reception_time)
+
+    def local_cslam_graph_callback(self, msg: PoseGraph):
+        if msg.robot_id != self.robot_id:
+            return
+        reception_time = self.get_clock().now().to_msg()
+        if self.start_time is None:
+            self.start_time = reception_time
+            self.get_logger().debug(f"start_time initialized from local graph reception: {self.start_time.sec}.{self.start_time.nanosec}")
+
+        local_vertices, local_edges = self.parse_graph_msg(msg, reception_time, is_local_robot_id=self.robot_id)
+        if not local_vertices:
+            return
+
+        self.get_logger().debug(f"Extracted local graph for r{self.robot_id} with {len(local_vertices)} vertices.")
+        self.vertices = local_vertices
+        self.edges = local_edges
+        self.check_and_save_at_interval(reception_time)
+
+    def request_local_cslam_graph(self):
+        self.get_logger().debug(f"Requesting graph update for r{self.robot_id}...")
+        msg = RobotIds()
+        msg.ids.append(self.robot_id)
+        self.trigger_pub.publish(msg)
+
+    # -------------------------
+    # Interval checking & saving
+    # -------------------------
+    def check_and_save_at_interval(self, current_timestamp: Union[MsgTime, float]):
+        if self.update_interval <= 0 or not self.vertices:
+            return
+
+        # derive sim_time_sec robustly
+        try:
+            if isinstance(current_timestamp, (int, float)):
+                sim_time_sec = float(current_timestamp)
             else:
-                self.get_logger().debug("[cslam_opt_cb] No estimates for this robot in received OptimizationResult (keeping previous vertices).")
+                sim_time_sec = float(current_timestamp.sec) + float(current_timestamp.nanosec) / 1e9
+        except Exception as e:
+            self.get_logger().warn(f"Failed to parse timestamp in check_and_save_at_interval: {e}")
+            sim_time_sec = 0.0
 
-    def cslam_global_graph_callback(self, msg: PoseGraph):
-        """Handle global PoseGraph messages (cslam_common_interfaces/PoseGraph)
-           Uses msg.values[] for vertex poses and msg.edges[] for constraints."""
-        with self.lock:
-            # pick header stamp if present, otherwise current time
-            if hasattr(msg, 'header') and msg.header is not None:
-                stamp_to_use = msg.header.stamp
-            else:
-                stamp_to_use = self.get_clock().now().to_msg()
-
-            if self.start_sim_time is None:
-                self.start_sim_time = stamp_to_use
-            self.latest_pose_timestamp = stamp_to_use
-
-            # Defensive extraction of vertex list (values[])
-            values = getattr(msg, 'values', None)
-            if values is None:
-                # log what we found
-                self.get_logger().warn(f"[cslam_global] Received PoseGraph without 'values' field. msg members: {dir(msg)}")
-                return
-
-            # Build a mapping from (robot_id, keyframe_id) -> g2o id
-            key_map: Dict[Tuple[int,int], int] = {}
-            new_vertices: List[dict] = []
-            g2o_id = 0
-
-            for v in values:
-                try:
-                    key_robot = int(v.key.robot_id)
-                    key_kf = int(v.key.keyframe_id)
-                    p = v.pose.position
-                    q = v.pose.orientation
-                except Exception:
-                    # skip malformed
-                    self.get_logger().warn("[cslam_global] Skipping malformed value entry.")
-                    continue
-
-                key = (key_robot, key_kf)
-                if key not in key_map:
-                    key_map[key] = g2o_id
-                    new_vertices.append({
-                        'id': g2o_id,
-                        'stamp': stamp_to_use,
-                        'pose': [p.x, p.y, p.z, q.x, q.y, q.z, q.w],
-                        'robot_id': key_robot
-                    })
-                    g2o_id += 1
-
-            # Now build edges
-            new_edges: List[dict] = []
-            edges_field = getattr(msg, 'edges', []) or []
-            for e in edges_field:
-                try:
-                    from_robot = int(e.key_from.robot_id)
-                    from_kf = int(e.key_from.keyframe_id)
-                    to_robot = int(e.key_to.robot_id)
-                    to_kf = int(e.key_to.keyframe_id)
-                    p = e.measurement.position
-                    q = e.measurement.orientation
-                except Exception:
-                    self.get_logger().warn("[cslam_global] Skipping malformed edge entry.")
-                    continue
-
-                kf_from = (from_robot, from_kf)
-                kf_to = (to_robot, to_kf)
-                if kf_from in key_map and kf_to in key_map:
-                    new_edges.append({
-                        'id_from': key_map[kf_from],
-                        'id_to'  : key_map[kf_to],
-                        'transform': [p.x, p.y, p.z, q.x, q.y, q.z, q.w]
-                    })
-
-            # Save into state
-            self.vertices, self.edges = new_vertices, new_edges
-
-    def odometry_callback(self, msg: PoseWithCovarianceStamped):
-        """Simplified ground truth saver: add each pose as a vertex."""
-        with self.lock:
-            if self.start_sim_time is None:
-                self.start_sim_time = msg.header.stamp
-            self.latest_pose_timestamp = msg.header.stamp
-
-            p = msg.pose.pose.position
-            q = msg.pose.pose.orientation
-            self.vertices.append({'id': self.node_id_counter,
-                                  'stamp': msg.header.stamp,
-                                  'pose': [p.x, p.y, p.z, q.x, q.y, q.z, q.w],
-                                  'robot_id': self.robot_id})
-            self.node_id_counter += 1
-
-    # ---------------------------
-    # Saving
-    # ---------------------------
-    def save_callback(self):
-        self.save_current_graph(final=False)
+        current_tick = int(sim_time_sec // self.update_interval)
+        if current_tick > self.last_saved_tick:
+            self.last_saved_tick = current_tick
+            filename = f"{current_tick * self.update_interval:.3f}"
+            self.write_files(filename, self.vertices, self.edges)
 
     def save_on_shutdown(self):
-        self.save_current_graph(final=True)
+        self.get_logger().info(f"Final save for '{self.graph_name}'.")
+        self.write_files("final", self.vertices, self.edges)
 
-    def save_current_graph(self, final=False):
-        with self.lock:
-            if not self.vertices or self.latest_pose_timestamp is None or self.start_sim_time is None:
-                self.get_logger().warn(f"[{self.graph_name}] Save called but no data or missing stamps. Skipping.")
-                return
+    # -------------------------
+    # Parse graph message helper
+    # -------------------------
+    def parse_graph_msg(self, graph_msg: PoseGraph, timestamp: MsgTime, is_global=False, is_local_robot_id=None) -> Tuple[List[dict], List[dict]]:
+        vertices: List[dict] = []
+        edges: List[dict] = []
+        key_to_id_map = {(v.key.robot_id, v.key.keyframe_id): i for i, v in enumerate(graph_msg.values)}
 
-            # compute filename: elapsed time (sec) since start_sim_time to latest_pose_timestamp
-            try:
-                elapsed = (Time.from_msg(self.latest_pose_timestamp) - Time.from_msg(self.start_sim_time)).nanoseconds / 1e9
-                filename = "final" if final else f"{elapsed:.3f}"
-            except Exception:
-                filename = "final" if final else "unknown_time"
+        for i, v in enumerate(graph_msg.values):
+            if is_local_robot_id is not None and v.key.robot_id != is_local_robot_id:
+                continue
+            p, q = v.pose.position, v.pose.orientation
+            verts_id = i if is_global else v.key.keyframe_id
+            vertices.append({'id': verts_id, 'stamp': timestamp, 'pose': [p.x, p.y, p.z, q.x, q.y, q.z, q.w]})
 
-            self.write_files(self.robot_dir, filename, copy.deepcopy(self.vertices), copy.deepcopy(self.edges))
+        for e in graph_msg.edges:
+            p, q = e.measurement.position, e.measurement.orientation
+            from_key = (e.key_from.robot_id, e.key_from.keyframe_id)
+            to_key = (e.key_to.robot_id, e.key_to.keyframe_id)
+            if is_global:
+                if from_key in key_to_id_map and to_key in key_to_id_map:
+                    edges.append({'id_from': key_to_id_map[from_key], 'id_to': key_to_id_map[to_key], 'transform': [p.x, p.y, p.z, q.x, q.y, q.z, q.w]})
+            elif is_local_robot_id is not None:
+                if e.key_from.robot_id == is_local_robot_id and e.key_to.robot_id == is_local_robot_id:
+                    edges.append({'id_from': e.key_from.keyframe_id, 'id_to': e.key_to.keyframe_id, 'transform': [p.x, p.y, p.z, q.x, q.y, q.z, q.w]})
 
-    def write_files(self, directory: str, name: str, vertices: List[dict], edges: List[dict]):
-        """Write .tum and .g2o files. vertices contains 'stamp' which is a builtin_interfaces/Time msg."""
-        self.get_logger().info(f"[{self.graph_name}] Saving {len(vertices)} poses to {name}.tum/g2o at {directory}")
-        # .tum uses elapsed seconds relative to start_sim_time
-        start_time = Time.from_msg(self.start_sim_time)
-        tum_path = os.path.join(directory, f"{name}.tum")
-        g2o_path = os.path.join(directory, f"{name}.g2o")
+        return vertices, edges
 
+    # -------------------------
+    # Save to files
+    # -------------------------
+    def save_graph_to_file(self, is_final: bool):
+        if not self.vertices:
+            self.get_logger().warn(f"No vertices to save for '{self.graph_name}'.")
+            return
+
+        last_stamp = self.vertices[-1]['stamp']
+        try:
+            sim_time_sec = float(last_stamp.sec) + float(last_stamp.nanosec) / 1e9
+        except Exception:
+            sim_time_sec = 0.0
+
+        filename = "final" if is_final else f"{sim_time_sec:.3f}"
+        self.write_files(filename, self.vertices, self.edges)
+
+    def write_files(self, name: str, vertices: list, edges: list):
+        tum_path = os.path.join(self.output_dir, f"{name}.tum")
+        g2o_path = os.path.join(self.output_dir, f"{name}.g2o")
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        self.get_logger().info(f"Saving {len(vertices)} vertices and {len(edges)} edges to {self.output_dir}/{name}.[tum/g2o]")
+
+        # Write TUM file
         with open(tum_path, 'w') as f_tum:
             for v in vertices:
                 try:
-                    elapsed_s = (Time.from_msg(v['stamp']) - start_time).nanoseconds / 1e9
-                except Exception:
+                    if self.start_time is None:
+                        elapsed_s = 0.0
+                    else:
+                        t_v = RclpyTime.from_msg(v['stamp'])
+                        t_start = RclpyTime.from_msg(self.start_time)
+                        elapsed_s = (t_v - t_start).nanoseconds / 1e9
+                except Exception as e:
+                    self.get_logger().debug(f"Failed to compute elapsed time for vertex: {e}")
+                    elapsed_s = 0.0
+
+                if elapsed_s < 0:
                     elapsed_s = 0.0
                 pose_vals = ' '.join(map(str, v['pose']))
                 f_tum.write(f"{elapsed_s:.6f} {pose_vals}\n")
 
-        # g2o: VERTEX_SE3:QUAT <id> x y z qx qy qz qw
+        # Write g2o file
         with open(g2o_path, 'w') as f_g2o:
             for v in vertices:
                 f_g2o.write(f"VERTEX_SE3:QUAT {v['id']} {' '.join(map(str, v['pose']))}\n")
-            # edges: write a reasonable information matrix if not provided
             info = "1000 0 0 0 0 0 1000 0 0 0 0 1000 0 0 0 1000 0 0 1000 0 1000"
             for e in edges:
                 f_g2o.write(f"EDGE_SE3:QUAT {e['id_from']} {e['id_to']} {' '.join(map(str, e['transform']))} {info}\n")
 
-# Entrypoint
+
 def main(args=None):
     rclpy.init(args=args)
     node = PoseGraphNode()
@@ -290,6 +236,7 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

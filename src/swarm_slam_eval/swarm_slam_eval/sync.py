@@ -1,3 +1,5 @@
+import threading
+import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Empty
@@ -36,7 +38,7 @@ class SyncNode(Node):
             self.readyCallback
         )
         
-        for i in range(1, self.num_robots + 1):
+        for i in range(self.num_robots):
             robot_id = i
             self.create_subscription(
                 String,
@@ -49,11 +51,19 @@ class SyncNode(Node):
         if self.ready_robots_count < self.num_robots:
             self.ready_robots_count += 1
             self.get_logger().info(f'A robot reported ready. Total ready: {self.ready_robots_count}/{self.num_robots}')
-
-        if self.ready_robots_count >= self.num_robots:
-            self.get_logger().info('All robots are ready! Publishing start signal.')
-            self.start_publisher.publish(Empty())
         
+        if self.ready_robots_count >= self.num_robots:
+            self.get_logger().info('All robots are ready! Publishing start signal (burst).')
+            # publish start in a short background burst so late subscribers have multiple chances to receive
+            def publish_burst():
+                for _ in range(5):
+                    try:
+                        self.start_publisher.publish(Empty())
+                    except Exception as e:
+                        self.get_logger().warn(f"Failed to publish start: {e}")
+                    time.sleep(0.15)
+            threading.Thread(target=publish_burst, daemon=True).start()
+
         response.success = True
         return response
 

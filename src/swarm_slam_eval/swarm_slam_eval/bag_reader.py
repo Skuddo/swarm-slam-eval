@@ -3,61 +3,59 @@ import json
 import yaml
 import os
 import time
-import pyproj
 import threading
+from collections import deque
+
 import rclpy
 import rclpy.serialization
-from std_srvs.srv import Trigger
-from collections import deque
 from rclpy.node import Node
 from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
-from rosgraph_msgs.msg import Clock
+
+from std_srvs.srv import Trigger
 from std_msgs.msg import String, Empty
-from swarm_slam_eval.qos_profiles import DATA_QOS, SIGNAL_QOS
+from rosgraph_msgs.msg import Clock
+from builtin_interfaces.msg import Time
+
+from swarm_slam_eval.qos_profiles import DATA_QOS, SIGNAL_QOS, CLOCK_QOS
 
 
 class BagReaderNode(Node):
     def __init__(self):
         super().__init__('bag_reader_node')
 
-        # Parameters
+        # --- Parameters ---
         self.declare_parameter('bag_path', '')
-        self.declare_parameter('buffer_size', 200)
-        self.declare_parameter('origin_lat', 0.0)
-        self.declare_parameter('origin_lon', 0.0)
         self.declare_parameter('sim_rate', 1.0)
         self.declare_parameter('is_clock_publisher', False)
+        self.declare_parameter('buffer_size', 200)
 
         bag_path = self.get_parameter('bag_path').get_parameter_value().string_value
-        self.buffer_size = self.get_parameter('buffer_size').get_parameter_value().integer_value
         self.sim_rate = self.get_parameter('sim_rate').get_parameter_value().double_value
-        origin_lat = self.get_parameter('origin_lat').get_parameter_value().double_value
-        origin_lon = self.get_parameter('origin_lon').get_parameter_value().double_value
         self.is_clock_publisher = self.get_parameter('is_clock_publisher').get_parameter_value().bool_value
+        self.buffer_size = self.get_parameter('buffer_size').get_parameter_value().integer_value
 
         if not bag_path:
-            self.get_logger().error("'bag_path' parameter is not set. Shutting down.")
+            self.get_logger().error("'bag_path' parameter not set. Shutting down.")
             rclpy.shutdown()
             return
 
+        self.get_logger().info(f"Loading bag from: {bag_path}")
+
+        # --- Load config ---
         config_path = os.path.join(os.path.dirname(bag_path), 'config.yaml')
-        if not os.path.exists(config_path):
-            self.get_logger().error(f"Config file not found at {config_path}")
+        try:
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            topic_mappings = config.get('ground', {}).get('topics', {})
+        except (IOError, yaml.YAMLError) as e:
+            self.get_logger().error(f"Failed to load config file at {config_path}: {e}")
             rclpy.shutdown()
             return
 
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
-
-        ground_cfg = self.config.get('ground', {})
-        topic_mappings = ground_cfg.get('topics', {})
-        self.get_logger().info(f"Loaded topic config: {list(topic_mappings.keys())}")
-
-        # open bag
+        # --- Bag reader setup ---
         self.storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
         self.converter_options = ConverterOptions('', '')
         self.reader = SequentialReader()
-
         try:
             self.reader.open(self.storage_options, self.converter_options)
         except Exception as e:
@@ -65,79 +63,93 @@ class BagReaderNode(Node):
             rclpy.shutdown()
             return
 
-        # map of topic_name -> type string (e.g. 'nav_msgs/msg/Odometry')
-        all_topics_and_types = {t.name: t.type for t in self.reader.get_all_topics_and_types()}
-
+        # --- Prepare topic publishers ---
         self.topic_publishers = {}
         self.msg_types = {}
-        self.topic_hz = {}
-        self.last_pub_time = {}
+        all_topics_and_types = {t.name: t.type for t in self.reader.get_all_topics_and_types()}
         self.src_to_dst = {}
 
         for dst_name, cfg in topic_mappings.items():
             src_topic = cfg['src']
-            hz = cfg.get('hz', 0)
             actual_type = all_topics_and_types.get(src_topic)
             if not actual_type:
-                self.get_logger().warn(f"Topic {src_topic} not found in bag, skipping")
-                continue
-            msg_class = self.import_msg_type(actual_type)
-            if not msg_class:
+                self.get_logger().warn(f"Topic '{src_topic}' not found in bag, skipping.")
                 continue
 
-            pub = self.create_publisher(msg_class, dst_name, DATA_QOS)
+            msg_class = self._import_msg_type(actual_type)
+            if msg_class:
+                pub = self.create_publisher(msg_class, dst_name, DATA_QOS)
+                self.topic_publishers[src_topic] = pub
+                self.msg_types[src_topic] = msg_class
+                self.src_to_dst[src_topic] = dst_name
 
-            # store keyed by src_topic so we can look up when reading bag
-            self.topic_publishers[src_topic] = pub
-            self.msg_types[src_topic] = msg_class
-            self.topic_hz[src_topic] = hz if hz > 0 else 1000.0  # avoid zero division
-            self.last_pub_time[src_topic] = None
-            self.src_to_dst[src_topic] = pub.topic_name
-
-        # Publishers for status and topics_info (transient-local so subscribers joining later see last)
-        self.status_publisher = self.create_publisher(String, "status", SIGNAL_QOS)
-        self.topics_info_publisher = self.create_publisher(String, "topics_info", SIGNAL_QOS)
-
-        self.clock_publisher = None
-        if self.is_clock_publisher:
-            self.clock_publisher = self.create_publisher(Clock, '/clock', SIGNAL_QOS)
-            self.get_logger().info("This node is designated as the master clock publisher.")
-            
-
-        # publish the actual topic list with types (use publisher.topic_name for dst)
+        # --- Publish topics_info for downstream nodes ---
         topics_json = json.dumps([
-            {'name': self.src_to_dst.get(cfg['src'], cfg['src']),
-             'type': all_topics_and_types.get(cfg['src'], 'unknown')}
+            {'name': dst, 'type': all_topics_and_types.get(cfg['src'], 'unknown')}
             for dst, cfg in topic_mappings.items() if cfg['src'] in self.src_to_dst
         ])
+        self.topics_info_publisher = self.create_publisher(String, "topics_info", SIGNAL_QOS)
         self.topics_info_publisher.publish(String(data=topics_json))
         self.get_logger().info(f"Published topics_info: {topics_json}")
 
-        self.origin_is_set = False
-        if origin_lat != 0.0 and origin_lon != 0.0:
-            self.get_logger().info(f"Using provided origin: LAT={origin_lat}, LON={origin_lon}")
-            self.initialize_projection(origin_lat, origin_lon)
+        # --- Clock publisher ---
+        self.clock_publisher = None
+        if self.is_clock_publisher:
+            self.clock_publisher = self.create_publisher(Clock, '/clock', CLOCK_QOS)
 
+        # --- Determine canonical start time ---
+        self.canonical_start_time_ns = -1
+        try:
+            peek_reader = SequentialReader()
+            peek_reader.open(self.storage_options, self.converter_options)
+            if peek_reader.has_next():
+                _, _, t = peek_reader.read_next()
+                self.canonical_start_time_ns = t
+                self.get_logger().info(f"Canonical start time: {self.canonical_start_time_ns / 1e9:.6f}")
+
+                if self.is_clock_publisher:
+                    # Preemptive /clock at t=0 to initialize TF
+                    initial_clock = Clock()
+                    sim_time = rclpy.time.Time(nanoseconds=0)
+                    initial_clock.clock = sim_time.to_msg()
+                    self.clock_publisher.publish(initial_clock)
+                    self.get_logger().info("Published initial preemptive /clock")
+        except Exception as e:
+            self.get_logger().error(f"Failed to pre-scan bag for initial timestamp: {e}")
+
+        # --- State ---
         self.message_buffer = deque()
-        self.stats_counter = {}
         self.is_playing = False
-        
-        # Announce ready and wait for start signal
+
+        # --- Status publisher and start subscription ---
+        self.status_publisher = self.create_publisher(String, "status", SIGNAL_QOS)
         self.status_publisher.publish(String(data='ready'))
         self.create_subscription(Empty, '/start_simulation', self.start_playback_callback, SIGNAL_QOS)
 
+        # --- Register with sync node ---
+        self.reg_client = self.create_client(Trigger, '/register_ready')
+        self._register_self()
+
         self.get_logger().info("Bag reader is ready and waiting for /start_simulation signal.")
+
+    # ----------------- Helper Methods -----------------
+    def _register_self(self):
+        """Call the sync node readiness service in background."""
+        def call_service_thread():
+            while not self.reg_client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().info("Sync service '/register_ready' not available, waiting...")
+            future = self.reg_client.call_async(Trigger.Request())
+            self.get_logger().info("Registration request sent to sync node.")
+        threading.Thread(target=call_service_thread, daemon=True).start()
 
     def start_playback_callback(self, msg):
         if not self.is_playing:
             self.is_playing = True
             self.status_publisher.publish(String(data='playing'))
-            self.get_logger().info(f"Starting real-time playback (Rate: {self.sim_rate}x)...")
-            self.create_timer(1.0, self.log_stats)
+            self.get_logger().info(f"Starting playback at {self.sim_rate}x real time...")
             threading.Thread(target=self.play_bag_in_real_time, daemon=True).start()
 
     def _fill_buffer(self):
-        # read up to buffer_size items from the bag
         count = 0
         while count < self.buffer_size and self.reader.has_next():
             topic, data, t = self.reader.read_next()
@@ -146,95 +158,80 @@ class BagReaderNode(Node):
                 count += 1
 
     def play_bag_in_real_time(self):
+        if self.canonical_start_time_ns == -1:
+            self.get_logger().error("Canonical start time not set. Playback aborted.")
+            return
+
         self._fill_buffer()
         if not self.message_buffer:
-            self.get_logger().info("Bag is empty or contains no relevant topics.")
+            self.get_logger().info("Bag empty or no relevant topics.")
             self.status_publisher.publish(String(data='finished'))
             return
 
-        first_msg_time = self.message_buffer[0][2] / 1e9
         wall_start_time = time.time()
 
         while rclpy.ok():
             if not self.message_buffer:
                 self._fill_buffer()
                 if not self.message_buffer:
-                    self.get_logger().info("End of bag file reached.")
+                    self.get_logger().info("End of bag reached.")
                     self.status_publisher.publish(String(data='finished'))
                     break
 
-            topic, data, t = self.message_buffer.popleft()
-            msg_time_sec = t / 1e9
-            elapsed_bag = msg_time_sec - first_msg_time
+            topic, data, t_ns = self.message_buffer.popleft()
+            rebased_ns = t_ns - self.canonical_start_time_ns
             elapsed_wall = time.time() - wall_start_time
+            delay_s = (rebased_ns / 1e9 / self.sim_rate) - elapsed_wall
+            if delay_s > 0:
+                time.sleep(delay_s)
 
-            delay = (elapsed_bag / self.sim_rate) - elapsed_wall
-            
-            if delay > 0:
-                time.sleep(delay)
-
+            # Deserialize
             msg_class = self.msg_types[topic]
             try:
                 msg = rclpy.serialization.deserialize_message(data, msg_class)
             except Exception as e:
-                self.get_logger().error(f"Failed to deserialize message on {topic}: {e}")
+                self.get_logger().error(f"Deserialization failed on {topic}: {e}")
                 continue
 
-            # publish on the publisher that corresponds to this src_topic
-            pub = self.topic_publishers.get(topic)
-            if pub:
-                pub.publish(msg)
-                self.last_pub_time[topic] = msg_time_sec
+            # --- Preserve original frame_id while updating timestamp ---
+            if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'):
+                old_frame = msg.header.frame_id or "world"
+                new_stamp = Time()
+                new_stamp.sec = int(rebased_ns / 1e9)
+                new_stamp.nanosec = int(rebased_ns % 1e9)
+                msg.header.stamp = new_stamp
+                msg.header.frame_id = old_frame
 
-                dst_topic = self.src_to_dst.get(topic, topic)
-                self.stats_counter[dst_topic] = self.stats_counter.get(dst_topic, 0) + 1
+            # Publish message
+            self.topic_publishers[topic].publish(msg)
 
-            if self.is_clock_publisher and self.clock_publisher:
-                current_clock_msg = Clock()
-                sim_time = rclpy.time.Time(seconds=msg_time_sec)
-                current_clock_msg.clock = sim_time.to_msg()
-                self.clock_publisher.publish(current_clock_msg)
+            # Publish clock
+            if self.is_clock_publisher:
+                clock_msg = Clock()
+                sim_time = rclpy.time.Time(nanoseconds=rebased_ns)
+                clock_msg.clock = sim_time.to_msg()
+                self.clock_publisher.publish(clock_msg)
 
-    def initialize_projection(self, lat, lon):
-        # AEQD local projection centered on origin
-        local_proj_str = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
+            # Refill buffer
+            if len(self.message_buffer) < self.buffer_size / 2:
+                self._fill_buffer()
+
+    def _import_msg_type(self, msg_type_str):
         try:
-            self.enu_transformer = pyproj.Transformer.from_crs(
-                "EPSG:4326",  # WGS84 lat/lon
-                pyproj.CRS.from_proj4(local_proj_str),
-                always_xy=True
-            )
-            self.origin_is_set = True
-            self.get_logger().info(f"GPS projection initialized to AEQD origin LAT={lat}, LON={lon}")
-        except Exception as e:
-            self.get_logger().error(f"Failed to initialize projection: {e}")
-            self.origin_is_set = False
-
-    def import_msg_type(self, msg_type_str):
-        try:
-            # expected formats: 'pkg/msg/Type' or 'pkg/msg/Type' variations
             parts = msg_type_str.split('/')
-            if len(parts) == 3 and parts[1] == 'msg':
-                pkg_name = parts[0]
-                msg_name = parts[2]
+            if len(parts) == 3:
+                pkg_name, msg_name = parts[0], parts[2]
             elif len(parts) == 2:
-                # maybe 'pkg/Type' or 'pkg/MsgType' fallback
-                pkg_name = parts[0]
-                msg_name = parts[1]
+                pkg_name, msg_name = parts
             else:
-                self.get_logger().error(f"Invalid msg_type_str format: {msg_type_str}")
+                self.get_logger().error(f"Invalid msg_type_str: {msg_type_str}")
                 return None
-
             mod = importlib.import_module(f"{pkg_name}.msg")
-            msg_class = getattr(mod, msg_name)
-            return msg_class
+            return getattr(mod, msg_name)
         except Exception as e:
-            self.get_logger().error(f"Could not import {msg_type_str}: {e}")
+            self.get_logger().error(f"Cannot import '{msg_type_str}': {e}")
             return None
 
-    def log_stats(self):
-        stats_str = ", ".join([f"{k}: {v}" for k, v in self.stats_counter.items()])
-        self.get_logger().info(f"Messages published so far: {stats_str}")
 
 def main(args=None):
     rclpy.init(args=args)
@@ -246,6 +243,7 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

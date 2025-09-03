@@ -28,7 +28,7 @@ class ImuNode(OdometryNode):
             DATA_QOS
         )
 
-        self.get_logger().info('ImuNode waiting for initial pose from gt_vis_pose...')
+        self.get_logger().info('ImuNode waiting for initial pose from viz/gt/pose...')
 
     def topicInfoCallback(self, msg: String):
         super().topicInfoCallback(msg)

@@ -20,7 +20,6 @@ class GroundTruthNode(OdometryNode):
         pose_msg = PoseWithCovarianceStamped()
         pose_msg.header = msg.header
         pose_msg.pose = msg.pose
-
         if self.odom_publisher:
             self.odom_publisher.publish(pose_msg)
 
@@ -29,7 +28,6 @@ class GroundTruthNode(OdometryNode):
         t.header.frame_id = "world"
         robot_namespace = self.get_namespace().strip('/')
         t.child_frame_id = f"{robot_namespace}/base_enu"
-        
         t.transform.translation.x = msg.pose.pose.position.x
         t.transform.translation.y = msg.pose.pose.position.y
         t.transform.translation.z = msg.pose.pose.position.z
