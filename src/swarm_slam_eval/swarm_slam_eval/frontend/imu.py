@@ -33,7 +33,6 @@ class ImuNode(OdometryNode):
     def topicInfoCallback(self, msg: String):
         super().topicInfoCallback(msg)
 
-    # Initial pose callback used to set the 
     def initialPoseCallback(self, msg: PoseWithCovarianceStamped):
         if not self.is_initialized:
             pos = msg.pose.pose.position
@@ -50,7 +49,6 @@ class ImuNode(OdometryNode):
             self.destroy_subscription(self.initial_pose_sub)
             self.register()
 
-    # basic IMU pose calculation, no filters no nothing
     def poseCallback(self, msg: Imu):
         if not self.is_initialized or not self.is_running:
             return

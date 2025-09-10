@@ -1,7 +1,6 @@
 import os
 import argparse
 
-# Based on the provided arguments create the config file for rviz and save it
 def generate_rviz_config(num_robots: int, initial_x: float, initial_y: float, output_path: str, nav_mode: str):
     rviz_content = f"""
 Panels:
@@ -65,14 +64,12 @@ Visualization Manager:
       Queue Size: 100
 """
 
-    # Ensure the output directory exists and write the file
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w') as f:
         f.write(rviz_content)
     print(f"Successfully generated RViz config at {output_path}")
 
 if __name__ == '__main__':
-    # Arg parsing
     parser = argparse.ArgumentParser(description='Generate an RViz config file for multi-robot visualization.')
     parser.add_argument(
       '--num-robots', type=int, required=True,

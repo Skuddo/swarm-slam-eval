@@ -23,7 +23,6 @@ class BagReaderNode(Node):
     def __init__(self):
         super().__init__('bag_reader_node')
 
-        # --- Parameters ---
         self.declare_parameter('bag_path', '')
         self.declare_parameter('sim_rate', 1.0)
         self.declare_parameter('is_clock_publisher', False)
@@ -41,7 +40,6 @@ class BagReaderNode(Node):
 
         self.get_logger().info(f"Loading bag from: {bag_path}")
 
-        # --- Load config ---
         config_path = os.path.join(os.path.dirname(bag_path), 'config.yaml')
         try:
             with open(config_path, 'r') as f:
@@ -52,7 +50,6 @@ class BagReaderNode(Node):
             rclpy.shutdown()
             return
 
-        # --- Bag reader setup ---
         self.storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
         self.converter_options = ConverterOptions('', '')
         self.reader = SequentialReader()
@@ -63,7 +60,6 @@ class BagReaderNode(Node):
             rclpy.shutdown()
             return
 
-        # --- Prepare topic publishers ---
         self.topic_publishers = {}
         self.msg_types = {}
         all_topics_and_types = {t.name: t.type for t in self.reader.get_all_topics_and_types()}
@@ -83,7 +79,6 @@ class BagReaderNode(Node):
                 self.msg_types[src_topic] = msg_class
                 self.src_to_dst[src_topic] = dst_name
 
-        # --- Publish topics_info for downstream nodes ---
         topics_json = json.dumps([
             {'name': dst, 'type': all_topics_and_types.get(cfg['src'], 'unknown')}
             for dst, cfg in topic_mappings.items() if cfg['src'] in self.src_to_dst
@@ -92,12 +87,10 @@ class BagReaderNode(Node):
         self.topics_info_publisher.publish(String(data=topics_json))
         self.get_logger().info(f"Published topics_info: {topics_json}")
 
-        # --- Clock publisher ---
         self.clock_publisher = None
         if self.is_clock_publisher:
             self.clock_publisher = self.create_publisher(Clock, '/clock', CLOCK_QOS)
 
-        # --- Determine canonical start time ---
         self.canonical_start_time_ns = -1
         try:
             peek_reader = SequentialReader()
@@ -108,7 +101,6 @@ class BagReaderNode(Node):
                 self.get_logger().info(f"Canonical start time: {self.canonical_start_time_ns / 1e9:.6f}")
 
                 if self.is_clock_publisher:
-                    # Preemptive /clock at t=0 to initialize TF
                     initial_clock = Clock()
                     sim_time = rclpy.time.Time(nanoseconds=0)
                     initial_clock.clock = sim_time.to_msg()
@@ -117,24 +109,19 @@ class BagReaderNode(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to pre-scan bag for initial timestamp: {e}")
 
-        # --- State ---
         self.message_buffer = deque()
         self.is_playing = False
 
-        # --- Status publisher and start subscription ---
         self.status_publisher = self.create_publisher(String, "status", SIGNAL_QOS)
         self.status_publisher.publish(String(data='ready'))
         self.create_subscription(Empty, '/start_simulation', self.start_playback_callback, SIGNAL_QOS)
 
-        # --- Register with sync node ---
         self.reg_client = self.create_client(Trigger, '/register_ready')
         self._register_self()
 
         self.get_logger().info("Bag reader is ready and waiting for /start_simulation signal.")
 
-    # ----------------- Helper Methods -----------------
     def _register_self(self):
-        """Call the sync node readiness service in background."""
         def call_service_thread():
             while not self.reg_client.wait_for_service(timeout_sec=2.0):
                 self.get_logger().info("Sync service '/register_ready' not available, waiting...")
@@ -185,7 +172,6 @@ class BagReaderNode(Node):
             if delay_s > 0:
                 time.sleep(delay_s)
 
-            # Deserialize
             msg_class = self.msg_types[topic]
             try:
                 msg = rclpy.serialization.deserialize_message(data, msg_class)
@@ -193,7 +179,6 @@ class BagReaderNode(Node):
                 self.get_logger().error(f"Deserialization failed on {topic}: {e}")
                 continue
 
-            # --- Preserve original frame_id while updating timestamp ---
             if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'):
                 old_frame = msg.header.frame_id or "world"
                 new_stamp = Time()
@@ -202,17 +187,14 @@ class BagReaderNode(Node):
                 msg.header.stamp = new_stamp
                 msg.header.frame_id = old_frame
 
-            # Publish message
             self.topic_publishers[topic].publish(msg)
 
-            # Publish clock
             if self.is_clock_publisher:
                 clock_msg = Clock()
                 sim_time = rclpy.time.Time(nanoseconds=rebased_ns)
                 clock_msg.clock = sim_time.to_msg()
                 self.clock_publisher.publish(clock_msg)
 
-            # Refill buffer
             if len(self.message_buffer) < self.buffer_size / 2:
                 self._fill_buffer()
 

@@ -5,9 +5,6 @@ import argparse
 import subprocess
 from typing import Optional, List, Dict, Tuple
 
-# ---------------------------
-# Helpers
-# ---------------------------
 def get_latest_file(directory: str, ext: str) -> Optional[str]:
     if not os.path.isdir(directory):
         return None
@@ -24,7 +21,6 @@ def get_latest_file(directory: str, ext: str) -> Optional[str]:
                 latest_ts = ts
                 latest_file = fn
         except Exception:
-            # fallback: choose lexicographically last if timestamps not numeric
             if latest_file is None or fn > latest_file:
                 latest_file = fn
     return os.path.join(directory, latest_file) if latest_file else None
@@ -58,9 +54,7 @@ def run_subprocess_capture(cmd: List[str], cwd: Optional[str] = None) -> Tuple[i
 
 def parse_evo_ape_stdout(stdout: str) -> Dict[str, float]:
     res = {}
-    # Normalize to lower case for searching
     s = stdout.lower()
-    # patterns to try (ordered)
     patterns = {
         'trans_rmse': [
             r"trans.*rmse[:\s]+([0-9eE+.\-]+)",
@@ -93,9 +87,6 @@ def parse_evo_ape_stdout(stdout: str) -> Dict[str, float]:
 def safe_mkdir(path: str):
     os.makedirs(path, exist_ok=True)
 
-# ---------------------------
-# Evo wrappers
-# ---------------------------
 def run_evo_ape(gt_tum: str, est_tum: str, out_png: str, out_zip: str, align: bool = True, show_plot: bool = True) -> Dict:
     cmd = ["evo_ape", "tum", gt_tum, est_tum]
     if align:
@@ -123,9 +114,6 @@ def run_evo_traj(gt_tum: str, est_tum: str, out_png: str, show_plot: bool = True
     rc, out, err = run_subprocess_capture(cmd)
     return {"cmd": cmd, "returncode": rc, "stdout": out, "stderr": err, "plot": out_png}
 
-# ---------------------------
-# Main evaluation logic
-# ---------------------------
 def merge_tums(tum_paths: List[str], out_path: str) -> None:
     seen_ts = set()
     lines = []
@@ -154,7 +142,6 @@ def find_robot_dirs(run_dir: str) -> List[str]:
     return sorted(dirs)
 
 def extract_timestamp_from_fname(fname: str) -> str:
-    # fname may be like '12.345.tum' or 'final.tum' -> return base (without extension)
     return os.path.splitext(os.path.basename(fname))[0]
 
 def evaluate_per_robot(run_dir: str, robot_dir: str, robot_id: int, nav_mode: str, out_dir: str, show_plots: bool):
@@ -179,7 +166,6 @@ def evaluate_per_robot(run_dir: str, robot_dir: str, robot_id: int, nav_mode: st
     ape_res = run_evo_ape(gt_file, est_file, ape_plot, ape_zip, align=True, show_plot=show_plots)
     results['ape'] = ape_res
 
-    # Save per-robot summary into a small json
     summary = {
         "robot_id": robot_id,
         "gt_file": gt_file,
@@ -202,7 +188,6 @@ def evaluate_global_snapshots(run_dir: str, robot_dirs: List[str], nav_mode: str
     for fname in ts_files:
         base = os.path.splitext(fname)[0]
         global_tum = os.path.join(global_dir, fname)
-        # collect per-robot matching local and ground truth at this base timestamp
         local_tums = []
         gt_tums = []
         local_counts = 0
@@ -216,13 +201,10 @@ def evaluate_global_snapshots(run_dir: str, robot_dirs: List[str], nav_mode: str
             if os.path.isfile(gt_candidate):
                 gt_tums.append(gt_candidate)
         if not gt_tums:
-            # nothing to compare -> skip snapshot
             continue
 
-        # Merge gt tums
         merged_gt_path = os.path.join(out_dir, f"merged_gt_{base}.tum")
         merge_tums(gt_tums, merged_gt_path)
-        # Evaluate global vs merged GT
         plot_path = os.path.join(out_dir, f"global_{base}_ape_plot.png")
         results_zip = os.path.join(out_dir, f"global_{base}_ape_stats.zip")
         ape_res = run_evo_ape(merged_gt_path, global_tum, plot_path, results_zip, align=True, show_plot=show_plots)
@@ -243,9 +225,6 @@ def evaluate_global_snapshots(run_dir: str, robot_dirs: List[str], nav_mode: str
 
     return results
 
-# ---------------------------
-# CLI / main
-# ---------------------------
 def main():
     parser = argparse.ArgumentParser(description="Run evaluation for a Swarm-SLAM run directory.")
     parser.add_argument('--run-dir', required=True, help='Top-level run directory (where r0 r1 ... and cslam_global are).')
@@ -266,11 +245,9 @@ def main():
     out_dir = os.path.join(run_dir, args.out_subdir)
     safe_mkdir(out_dir)
 
-    # discover robot dirs
     robot_dirs = find_robot_dirs(run_dir)
     if not robot_dirs:
         print("No robot directories found (expected r0, r1, ...).")
-    # filter by provided robots list
     if args.robots:
         filtered = []
         ids = set(args.robots)
@@ -283,13 +260,11 @@ def main():
     print(f"Discovered robot directories: {[os.path.basename(d) for d in robot_dirs]}")
     summary = {"per_robot": {}, "global": None, "run_dir": run_dir}
 
-    # Per-robot eval
     for rd in robot_dirs:
         rid = int(os.path.basename(rd)[1:])
         print(f"\n--- Evaluating robot r{rid} (nav_mode={nav_mode}) ---")
         pr = evaluate_per_robot(run_dir, rd, rid, nav_mode, out_dir, show_plots)
         summary['per_robot'][f"r{rid}"] = pr
-        # print quick summary
         if 'error' in pr:
             print(f" r{rid}: ERROR - {pr['error']}")
         else:
@@ -298,17 +273,14 @@ def main():
             print(f"   gt: {pr['summary']['gt_file']}")
             print(f"   est: {pr['summary']['est_file']}")
 
-    # Global eval
     print("\n--- Evaluating global snapshots (cslam_global) ---")
     global_res = evaluate_global_snapshots(run_dir, robot_dirs, nav_mode, out_dir, show_plots)
     summary['global'] = global_res
 
-    # Write overall summary json
     summary_path = os.path.join(run_dir, "eval_summary.json")
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
 
-    # Print terminal-friendly summary
     print("\n=== EVALUATION SUMMARY ===")
     for rname, pr in summary['per_robot'].items():
         print(f"\nRobot {rname}:")

@@ -24,14 +24,12 @@ class SyncNode(Node):
         self.ready_robots_count = 0
         self.finished_robots = set()
 
-        # Publisher to signal all nodes to start
         self.start_publisher = self.create_publisher(
             Empty,
             '/start_simulation',
             SIGNAL_QOS
         )
 
-        # Service for odometry nodes to report they are ready
         self.ready_service = self.create_service(
             Trigger,
             '/register_ready',
@@ -54,14 +52,32 @@ class SyncNode(Node):
         
         if self.ready_robots_count >= self.num_robots:
             self.get_logger().info('All robots are ready! Publishing start signal (burst).')
-            # publish start in a short background burst so late subscribers have multiple chances to receive
             def publish_burst():
-                for _ in range(5):
+                wait_timeout = 5.0
+                poll_interval = 0.05
+                waited = 0.0
+
+                while waited < wait_timeout:
+                    subs = self.start_publisher.get_subscription_count()
+                    if subs >= self.num_robots:
+                        break
+                    time.sleep(poll_interval)
+                    waited += poll_interval
+
+                if waited >= wait_timeout:
+                    self.get_logger().warn(
+                        f"Timeout waiting for subscribers to /start_simulation (have {self.start_publisher.get_subscription_count()}, "
+                        f"expected {self.num_robots}); publishing anyway."
+                    )
+
+                for _ in range(8):
                     try:
                         self.start_publisher.publish(Empty())
                     except Exception as e:
                         self.get_logger().warn(f"Failed to publish start: {e}")
-                    time.sleep(0.15)
+                    time.sleep(0.12)
+
+
             threading.Thread(target=publish_burst, daemon=True).start()
 
         response.success = True

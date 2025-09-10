@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 import os
 import rclpy
+from typing import List, Tuple, Union
 from rclpy.node import Node
+from rclpy.time import Time as RclpyTime
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from builtin_interfaces.msg import Time as MsgTime
 from cslam_common_interfaces.msg import PoseGraph, RobotIds
 from swarm_slam_eval.qos_profiles import CSLAM_QOS, DATA_QOS
-from builtin_interfaces.msg import Time as MsgTime
-from rclpy.time import Time as RclpyTime
-from typing import List, Tuple, Union
 
 class PoseGraphNode(Node):
 
     def __init__(self):
         super().__init__('pose_graph_node')
 
-        # Parameters
         self.declare_parameter('results_base_path', '')
         self.declare_parameter('graph_name', '')
         self.declare_parameter('update_time', 5.0)
@@ -27,28 +26,24 @@ class PoseGraphNode(Node):
         self.clock_wait_timeout = self.get_parameter('clock_wait_timeout').get_parameter_value().double_value
 
         ns = self.get_namespace().strip('/')
-        self.robot_id = int(''.join(filter(str.isdigit, ns))) if ns else -1
+        self.robot_id = int(''.join(filter(str.isdigit, ns)))
 
-        # Data containers
         self.vertices: List[dict] = []
         self.edges: List[dict] = []
         self.gt_pose_counter = 0
-        self.last_saved_tick = -1  # Tracks the last saved time interval
+        self.last_saved_tick = -1
 
-        # start_time: builtin_interfaces.msg.Time (set when first stamp arrives)
         self.start_time: Union[MsgTime, None] = None
 
-        # Create output directory
         robot_subdir = f"r{self.robot_id}" if self.robot_id != -1 and self.graph_name != 'cslam_global' else ""
         self.output_dir = os.path.join(self.results_base_path, robot_subdir, self.graph_name)
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Subscriptions and publishers depending on graph_name
         if self.graph_name == 'ground_truth':
             self.create_subscription(PoseWithCovarianceStamped, 'gt_vis_pose', self.gt_callback, DATA_QOS)
             self.get_logger().info(f"Saver started in 'ground_truth' mode for r{self.robot_id} (output: {self.output_dir})")
         elif self.graph_name == 'cslam':
-            self.trigger_pub = self.create_publisher(RobotIds, 'cslam/get_pose_graph', 10)
+            self.trigger_pub = self.create_publisher(RobotIds, 'cslam/get_pose_graph', CSLAM_QOS)
             self.create_subscription(PoseGraph, '/cslam/pose_graph', self.local_cslam_graph_callback, CSLAM_QOS)
             self.create_timer(self.update_interval, self.request_local_cslam_graph)
             self.get_logger().info(f"Saver started in 'cslam' (local) mode for r{self.robot_id}.")
@@ -56,18 +51,13 @@ class PoseGraphNode(Node):
             self.create_subscription(PoseGraph, '/cslam/pose_graph', self.global_cslam_graph_callback, CSLAM_QOS)
             self.get_logger().info("Saver started in 'cslam_global' mode.")
 
-        # Make sure we save final state on shutdown
         rclpy.get_default_context().on_shutdown(self.save_on_shutdown)
 
-    # -------------------------
-    # Callbacks
-    # -------------------------
     def gt_callback(self, msg: PoseWithCovarianceStamped):
         try:
             p, q = msg.pose.pose.position, msg.pose.pose.orientation
             stamp_msg = msg.header.stamp
 
-            # initialize start_time if unset
             if self.start_time is None:
                 self.start_time = stamp_msg
                 self.get_logger().info(f"start_time initialized from GT stamp: {self.start_time.sec}.{self.start_time.nanosec}")
@@ -79,7 +69,6 @@ class PoseGraphNode(Node):
             })
             self.gt_pose_counter += 1
 
-            # Check if we need to save at interval
             self.check_and_save_at_interval(stamp_msg)
 
         except Exception as e:
@@ -96,36 +85,59 @@ class PoseGraphNode(Node):
         self.check_and_save_at_interval(reception_time)
 
     def local_cslam_graph_callback(self, msg: PoseGraph):
-        if msg.robot_id != self.robot_id:
-            return
+        try:
+            if hasattr(msg, 'robot_id') and isinstance(msg.robot_id, int) and msg.robot_id != self.robot_id:
+                self.get_logger().debug(f"Ignoring PoseGraph for robot_id={msg.robot_id} (this saver is r{self.robot_id}).")
+                return
+        except Exception as e:
+            self.get_logger().debug(f"Error while checking msg.robot_id: {e}")
+
         reception_time = self.get_clock().now().to_msg()
         if self.start_time is None:
             self.start_time = reception_time
-            self.get_logger().debug(f"start_time initialized from local graph reception: {self.start_time.sec}.{self.start_time.nanosec}")
+            self.get_logger().info(f"start_time initialized from local graph reception: {self.start_time.sec}.{self.start_time.nanosec}")
+
+        try:
+            n_vals = len(msg.values) if hasattr(msg, 'values') else 0
+            n_edges = len(msg.edges) if hasattr(msg, 'edges') else 0
+        except Exception:
+            n_vals, n_edges = 0, 0
+        self.get_logger().debug(f"r{self.robot_id} received PoseGraph (values={n_vals}, edges={n_edges}) at {reception_time.sec}.{reception_time.nanosec}")
 
         local_vertices, local_edges = self.parse_graph_msg(msg, reception_time, is_local_robot_id=self.robot_id)
+
         if not local_vertices:
+            self.get_logger().debug(f"No local vertices parsed for r{self.robot_id} from incoming PoseGraph (len(values)={n_vals}).")
             return
 
-        self.get_logger().debug(f"Extracted local graph for r{self.robot_id} with {len(local_vertices)} vertices.")
         self.vertices = local_vertices
         self.edges = local_edges
+
+        if self.last_saved_tick == -1:
+            try:
+                forced_name = f"{0:.3f}"
+                self.get_logger().info(f"r{self.robot_id}: first local graph received — forcing initial save to {forced_name}.tum")
+                self.write_files(forced_name, self.vertices, self.edges)
+                self.last_saved_tick = 0
+            except Exception as e:
+                self.get_logger().error(f"r{self.robot_id}: forced initial save failed: {e}")
+
         self.check_and_save_at_interval(reception_time)
 
     def request_local_cslam_graph(self):
         self.get_logger().debug(f"Requesting graph update for r{self.robot_id}...")
         msg = RobotIds()
         msg.ids.append(self.robot_id)
-        self.trigger_pub.publish(msg)
+        try:
+            self.trigger_pub.publish(msg)
+            self.get_logger().debug(f"Published cslam/get_pose_graph request for r{self.robot_id}.")
+        except Exception as e:
+            self.get_logger().warn(f"Failed to publish cslam/get_pose_graph for r{self.robot_id}: {e}")
 
-    # -------------------------
-    # Interval checking & saving
-    # -------------------------
     def check_and_save_at_interval(self, current_timestamp: Union[MsgTime, float]):
         if self.update_interval <= 0 or not self.vertices:
             return
 
-        # derive sim_time_sec robustly
         try:
             if isinstance(current_timestamp, (int, float)):
                 sim_time_sec = float(current_timestamp)
@@ -145,9 +157,6 @@ class PoseGraphNode(Node):
         self.get_logger().info(f"Final save for '{self.graph_name}'.")
         self.write_files("final", self.vertices, self.edges)
 
-    # -------------------------
-    # Parse graph message helper
-    # -------------------------
     def parse_graph_msg(self, graph_msg: PoseGraph, timestamp: MsgTime, is_global=False, is_local_robot_id=None) -> Tuple[List[dict], List[dict]]:
         vertices: List[dict] = []
         edges: List[dict] = []
@@ -173,9 +182,6 @@ class PoseGraphNode(Node):
 
         return vertices, edges
 
-    # -------------------------
-    # Save to files
-    # -------------------------
     def save_graph_to_file(self, is_final: bool):
         if not self.vertices:
             self.get_logger().warn(f"No vertices to save for '{self.graph_name}'.")
@@ -197,7 +203,6 @@ class PoseGraphNode(Node):
 
         self.get_logger().info(f"Saving {len(vertices)} vertices and {len(edges)} edges to {self.output_dir}/{name}.[tum/g2o]")
 
-        # Write TUM file
         with open(tum_path, 'w') as f_tum:
             for v in vertices:
                 try:
@@ -216,7 +221,6 @@ class PoseGraphNode(Node):
                 pose_vals = ' '.join(map(str, v['pose']))
                 f_tum.write(f"{elapsed_s:.6f} {pose_vals}\n")
 
-        # Write g2o file
         with open(g2o_path, 'w') as f_g2o:
             for v in vertices:
                 f_g2o.write(f"VERTEX_SE3:QUAT {v['id']} {' '.join(map(str, v['pose']))}\n")

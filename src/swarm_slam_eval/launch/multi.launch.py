@@ -13,12 +13,6 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 
-nav_modes_config = {
-    "imu"   : {},
-    "cslam" : {}
-}
-
-# This is the main orchestrator function. It runs at launch time and sets everything up.
 def launch_setup(context, *args, **kwargs):
     logger = launch.logging.get_logger("launch_setup")
     
@@ -43,22 +37,11 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"Could not load dataset config at '{config_path}': {e}")
         return [Shutdown()]
 
-    # Check num robots param
     conf_max_robots = config["ground"]["sequences"]
     if conf_max_robots < num_robots:
         logger.error(f"Num robots ({num_robots}) > max allowed ({conf_max_robots}). Shutting down.")
         return [Shutdown()]
     
-    # prepare list od odometry nodes based on launch config
-    # ground truth should always be there, default: "imu"
-    nav_modes_to_launch = ['ground_truth']
-    if nav_mode in nav_modes_config:
-        nav_modes_to_launch.append(nav_mode)
-    else:
-        logger.error(f"Navigation mode '{nav_mode}' is not recognized. Shutting down.")
-        return [Shutdown()]
-    
-    # Pre-scan the bag file to get initial coordinates ---
     try:
         robot1_bag_name = f"{config[sequence]['names']}1"
         robot1_bag_path = os.path.join(dataset_path, robot1_bag_name)
@@ -78,7 +61,6 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"Failed to get initial coordinates from bag: {e}. Defaulting to (0,0).")
         initial_x, initial_y = 0.0, 0.0
 
-    # Generate the rviz config
     try:
         config_script_path = os.path.join(project_root, 'utils', 'config_generator.py')
         rviz_config_file = os.path.join(pkg_share, 'config', f"generated_{num_robots}_robots.rviz")
@@ -102,10 +84,7 @@ def launch_setup(context, *args, **kwargs):
     run_folder_name = f"{timestamp_str}_{dataset}_{num_robots}robots_{nav_mode}"
     run_specific_path = os.path.join(results_base_path, run_folder_name)
 
-    # Pack nodes
     actions_to_launch = []
-
-    # Sync node
     actions_to_launch.append(Node(
         package='swarm_slam_eval',
         executable='sync_node',
@@ -117,9 +96,7 @@ def launch_setup(context, *args, **kwargs):
             }]
     ))
     
-    # Check if running cslam
     if nav_mode == 'cslam':
-        # Add cslam launch file to actions
         cslam_launch_file = os.path.join(pkg_share, 'launch', 'cslam.launch.py')
         cslam_config_path = os.path.join(
             get_package_share_directory("cslam_experiments"), "config", "graco_lidar.yaml")
@@ -133,7 +110,6 @@ def launch_setup(context, *args, **kwargs):
             }.items()
         )
 
-        # Add cslam global graph saver to actions
         global_graph_saver = Node(
             package='swarm_slam_eval',
             executable='pose_graph_node',
@@ -158,12 +134,10 @@ def launch_setup(context, *args, **kwargs):
 
         actions_to_launch.append(delayed_cslam_launch)
         
-    # Per robot nodes/actions
     for i in range(num_robots):
         bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i+1}')
 
         per_robot_nodes = [
-            # Bag reader
             Node(
                 package='swarm_slam_eval',
                 executable='bag_reader_node',
@@ -176,7 +150,6 @@ def launch_setup(context, *args, **kwargs):
                     'is_clock_publisher': (i == 0)
                 }],
             ),
-            # Pose graph saver
             Node(
                 package='swarm_slam_eval',
                 executable='pose_graph_node',
@@ -190,7 +163,6 @@ def launch_setup(context, *args, **kwargs):
                     'clock_wait_timeout': clock_wait_timeout
                 }]
             ),
-            # ground_truth_node adapter for visualization and evaluation
             Node(
                 package='swarm_slam_eval',
                 executable='ground_truth_node',
@@ -199,19 +171,17 @@ def launch_setup(context, *args, **kwargs):
             )
         ]
 
-        # If in cslam mode, add the individual C-SLAM saver and adapter for this robot
         if nav_mode == 'cslam':
             per_robot_nodes.append(
                 Node(
                     package='swarm_slam_eval',
                     executable='pose_graph_node',
-                    name='cslam_graph_saver', # This becomes /rX/cslam_graph_saver
+                    name='cslam_graph_saver',
                     parameters=[{
                         'results_base_path': run_specific_path,
-                        'graph_name': 'cslam', # Name for individual logic
+                        'graph_name': 'cslam',
                         'use_sim_time': use_sim_time,
                         'update_time' : update_time,
-                        # pass clock wait timeout parameter
                         'clock_wait_timeout': clock_wait_timeout
                     }]
                 )
@@ -219,7 +189,7 @@ def launch_setup(context, *args, **kwargs):
             per_robot_nodes.append(
                 Node(
                     package='swarm_slam_eval',
-                    executable='cslam_node', # The adapter for visualization
+                    executable='cslam_node',
                     name='cslam',
                     parameters=[{'use_sim_time': use_sim_time}],
                 )
@@ -239,7 +209,8 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
         parameters=[{
             'num_robots': LaunchConfiguration('num_robots'),
-            'use_sim_time': use_sim_time
+            'use_sim_time': use_sim_time,
+            'nav_mode': LaunchConfiguration('nav_mode'),
             }],
         condition=IfCondition(LaunchConfiguration('visualize')),
     ))
@@ -268,7 +239,6 @@ def generate_launch_description():
                               description='What to use for pose calculation'),
         DeclareLaunchArgument('update_time', default_value='5.0',
                               description='How often (in seconds) the evaluator saves checkpoints'),
-        # NEW: allow configuring how long savers/dumper wait for /clock
         DeclareLaunchArgument('clock_wait_timeout', default_value='10.0',
                               description='How long (s) to wait for /clock before falling back'),
         DeclareLaunchArgument('sensor_type',

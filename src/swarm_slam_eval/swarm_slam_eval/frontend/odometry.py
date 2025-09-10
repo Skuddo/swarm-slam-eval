@@ -1,5 +1,3 @@
-# In swarm_slam_eval/OdometryNode.py (or wherever it is located)
-
 import json
 import threading
 from std_msgs.msg import Empty, String
