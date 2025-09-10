@@ -144,7 +144,7 @@ def find_robot_dirs(run_dir: str) -> List[str]:
 def extract_timestamp_from_fname(fname: str) -> str:
     return os.path.splitext(os.path.basename(fname))[0]
 
-def evaluate_per_robot(run_dir: str, robot_dir: str, robot_id: int, nav_mode: str, out_dir: str, show_plots: bool):
+def evaluate_per_robot(run_dir: str, robot_dir: str, rid: int, nav_mode: str, out_dir: str, show_plots: bool):
     results = {}
     gt_dir = os.path.join(robot_dir, "ground_truth")
     est_dir = os.path.join(robot_dir, nav_mode)
@@ -158,16 +158,16 @@ def evaluate_per_robot(run_dir: str, robot_dir: str, robot_id: int, nav_mode: st
         return results
 
     safe_mkdir(out_dir)
-    plot_path = os.path.join(out_dir, f"r{robot_id}_{nav_mode}_trajectory_plot.png")
+    plot_path = os.path.join(out_dir, f"r{rid}_{nav_mode}_trajectory_plot.png")
     run_evo_traj(gt_file, est_file, plot_path, show_plot=show_plots)
 
-    ape_plot = os.path.join(out_dir, f"r{robot_id}_{nav_mode}_ape_plot.png")
-    ape_zip = os.path.join(out_dir, f"r{robot_id}_{nav_mode}_ape_stats.zip")
+    ape_plot = os.path.join(out_dir, f"r{rid}_{nav_mode}_ape_plot.png")
+    ape_zip = os.path.join(out_dir, f"r{rid}_{nav_mode}_ape_stats.zip")
     ape_res = run_evo_ape(gt_file, est_file, ape_plot, ape_zip, align=True, show_plot=show_plots)
     results['ape'] = ape_res
 
     summary = {
-        "robot_id": robot_id,
+        "rid": rid,
         "gt_file": gt_file,
         "est_file": est_file,
         "ape_parsed": ape_res.get("parsed", {}),

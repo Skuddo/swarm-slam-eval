@@ -37,11 +37,11 @@ class SyncNode(Node):
         )
         
         for i in range(self.num_robots):
-            robot_id = i
+            rid = i
             self.create_subscription(
                 String,
-                f'/r{robot_id}/status',
-                lambda msg, rid=robot_id: self.statusCallback(msg, rid),
+                f'/r{rid}/status',
+                lambda msg, rid=rid: self.statusCallback(msg, rid),
                 SIGNAL_QOS
             )
 
@@ -83,11 +83,11 @@ class SyncNode(Node):
         response.success = True
         return response
 
-    def statusCallback(self, msg: String, robot_id: int):
+    def statusCallback(self, msg: String, rid: int):
         if msg.data == 'finished':
-            if robot_id not in self.finished_robots:
-                self.finished_robots.add(robot_id)
-                self.get_logger().info(f"Robot {robot_id} bag has finished. Total finished: {len(self.finished_robots)}/{self.num_robots}")
+            if rid not in self.finished_robots:
+                self.finished_robots.add(rid)
+                self.get_logger().info(f"Robot {rid} bag has finished. Total finished: {len(self.finished_robots)}/{self.num_robots}")
 
             if len(self.finished_robots) >= self.num_robots:
                 self.get_logger().info("All bags have finished playing. Shutting down all nodes.")

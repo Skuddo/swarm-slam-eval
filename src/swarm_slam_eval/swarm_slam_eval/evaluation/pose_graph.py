@@ -25,28 +25,30 @@ class PoseGraphNode(Node):
         self.use_sim_time = self.get_parameter('use_sim_time').get_parameter_value().bool_value
         self.clock_wait_timeout = self.get_parameter('clock_wait_timeout').get_parameter_value().double_value
 
-        ns = self.get_namespace().strip('/')
-        self.robot_id = int(''.join(filter(str.isdigit, ns)))
-
         self.vertices: List[dict] = []
         self.edges: List[dict] = []
         self.gt_pose_counter = 0
         self.last_saved_tick = -1
 
+        if self.graph_name != 'cslam_global':
+            self.rid = int(self.get_namespace()[2])
+            robot_subdir = f"r{self.rid}"
+        else:
+            robot_subdir = ""
+
         self.start_time: Union[MsgTime, None] = None
 
-        robot_subdir = f"r{self.robot_id}" if self.robot_id != -1 and self.graph_name != 'cslam_global' else ""
         self.output_dir = os.path.join(self.results_base_path, robot_subdir, self.graph_name)
         os.makedirs(self.output_dir, exist_ok=True)
 
         if self.graph_name == 'ground_truth':
             self.create_subscription(PoseWithCovarianceStamped, 'gt_vis_pose', self.gt_callback, DATA_QOS)
-            self.get_logger().info(f"Saver started in 'ground_truth' mode for r{self.robot_id} (output: {self.output_dir})")
+            self.get_logger().info(f"Saver started in 'ground_truth' mode for r{self.rid} (output: {self.output_dir})")
         elif self.graph_name == 'cslam':
             self.trigger_pub = self.create_publisher(RobotIds, 'cslam/get_pose_graph', CSLAM_QOS)
             self.create_subscription(PoseGraph, '/cslam/pose_graph', self.local_cslam_graph_callback, CSLAM_QOS)
             self.create_timer(self.update_interval, self.request_local_cslam_graph)
-            self.get_logger().info(f"Saver started in 'cslam' (local) mode for r{self.robot_id}.")
+            self.get_logger().info(f"Saver started in 'cslam' (local) mode for r{self.rid}.")
         elif self.graph_name == 'cslam_global':
             self.create_subscription(PoseGraph, '/cslam/pose_graph', self.global_cslam_graph_callback, CSLAM_QOS)
             self.get_logger().info("Saver started in 'cslam_global' mode.")
@@ -86,11 +88,11 @@ class PoseGraphNode(Node):
 
     def local_cslam_graph_callback(self, msg: PoseGraph):
         try:
-            if hasattr(msg, 'robot_id') and isinstance(msg.robot_id, int) and msg.robot_id != self.robot_id:
-                self.get_logger().debug(f"Ignoring PoseGraph for robot_id={msg.robot_id} (this saver is r{self.robot_id}).")
+            if hasattr(msg, 'rid') and isinstance(msg.rid, int) and msg.rid != self.rid:
+                self.get_logger().debug(f"Ignoring PoseGraph for rid={msg.rid} (this saver is r{self.rid}).")
                 return
         except Exception as e:
-            self.get_logger().debug(f"Error while checking msg.robot_id: {e}")
+            self.get_logger().debug(f"Error while checking msg.rid: {e}")
 
         reception_time = self.get_clock().now().to_msg()
         if self.start_time is None:
@@ -102,12 +104,12 @@ class PoseGraphNode(Node):
             n_edges = len(msg.edges) if hasattr(msg, 'edges') else 0
         except Exception:
             n_vals, n_edges = 0, 0
-        self.get_logger().debug(f"r{self.robot_id} received PoseGraph (values={n_vals}, edges={n_edges}) at {reception_time.sec}.{reception_time.nanosec}")
+        self.get_logger().debug(f"r{self.rid} received PoseGraph (values={n_vals}, edges={n_edges}) at {reception_time.sec}.{reception_time.nanosec}")
 
-        local_vertices, local_edges = self.parse_graph_msg(msg, reception_time, is_local_robot_id=self.robot_id)
+        local_vertices, local_edges = self.parse_graph_msg(msg, reception_time, is_local_rid=self.rid)
 
         if not local_vertices:
-            self.get_logger().debug(f"No local vertices parsed for r{self.robot_id} from incoming PoseGraph (len(values)={n_vals}).")
+            self.get_logger().debug(f"No local vertices parsed for r{self.rid} from incoming PoseGraph (len(values)={n_vals}).")
             return
 
         self.vertices = local_vertices
@@ -116,23 +118,23 @@ class PoseGraphNode(Node):
         if self.last_saved_tick == -1:
             try:
                 forced_name = f"{0:.3f}"
-                self.get_logger().info(f"r{self.robot_id}: first local graph received — forcing initial save to {forced_name}.tum")
+                self.get_logger().info(f"r{self.rid}: first local graph received — forcing initial save to {forced_name}.tum")
                 self.write_files(forced_name, self.vertices, self.edges)
                 self.last_saved_tick = 0
             except Exception as e:
-                self.get_logger().error(f"r{self.robot_id}: forced initial save failed: {e}")
+                self.get_logger().error(f"r{self.rid}: forced initial save failed: {e}")
 
         self.check_and_save_at_interval(reception_time)
 
     def request_local_cslam_graph(self):
-        self.get_logger().debug(f"Requesting graph update for r{self.robot_id}...")
+        self.get_logger().debug(f"Requesting graph update for r{self.rid}...")
         msg = RobotIds()
-        msg.ids.append(self.robot_id)
+        msg.ids.append(self.rid)
         try:
             self.trigger_pub.publish(msg)
-            self.get_logger().debug(f"Published cslam/get_pose_graph request for r{self.robot_id}.")
+            self.get_logger().debug(f"Published cslam/get_pose_graph request for r{self.rid}.")
         except Exception as e:
-            self.get_logger().warn(f"Failed to publish cslam/get_pose_graph for r{self.robot_id}: {e}")
+            self.get_logger().warn(f"Failed to publish cslam/get_pose_graph for r{self.rid}: {e}")
 
     def check_and_save_at_interval(self, current_timestamp: Union[MsgTime, float]):
         if self.update_interval <= 0 or not self.vertices:
@@ -157,13 +159,13 @@ class PoseGraphNode(Node):
         self.get_logger().info(f"Final save for '{self.graph_name}'.")
         self.write_files("final", self.vertices, self.edges)
 
-    def parse_graph_msg(self, graph_msg: PoseGraph, timestamp: MsgTime, is_global=False, is_local_robot_id=None) -> Tuple[List[dict], List[dict]]:
+    def parse_graph_msg(self, graph_msg: PoseGraph, timestamp: MsgTime, is_global=False, is_local_rid=None) -> Tuple[List[dict], List[dict]]:
         vertices: List[dict] = []
         edges: List[dict] = []
         key_to_id_map = {(v.key.robot_id, v.key.keyframe_id): i for i, v in enumerate(graph_msg.values)}
 
         for i, v in enumerate(graph_msg.values):
-            if is_local_robot_id is not None and v.key.robot_id != is_local_robot_id:
+            if is_local_rid is not None and v.key.robot_id != is_local_rid:
                 continue
             p, q = v.pose.position, v.pose.orientation
             verts_id = i if is_global else v.key.keyframe_id
@@ -176,8 +178,8 @@ class PoseGraphNode(Node):
             if is_global:
                 if from_key in key_to_id_map and to_key in key_to_id_map:
                     edges.append({'id_from': key_to_id_map[from_key], 'id_to': key_to_id_map[to_key], 'transform': [p.x, p.y, p.z, q.x, q.y, q.z, q.w]})
-            elif is_local_robot_id is not None:
-                if e.key_from.robot_id == is_local_robot_id and e.key_to.robot_id == is_local_robot_id:
+            elif is_local_rid is not None:
+                if e.key_from.robot_id == is_local_rid and e.key_to.robot_id == is_local_rid:
                     edges.append({'id_from': e.key_from.keyframe_id, 'id_to': e.key_to.keyframe_id, 'transform': [p.x, p.y, p.z, q.x, q.y, q.z, q.w]})
 
         return vertices, edges
