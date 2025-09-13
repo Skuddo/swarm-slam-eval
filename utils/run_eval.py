@@ -52,38 +52,6 @@ def run_subprocess_capture(cmd: List[str], cwd: Optional[str] = None) -> Tuple[i
     except FileNotFoundError as e:
         return 127, "", str(e)
 
-def parse_evo_ape_stdout(stdout: str) -> Dict[str, float]:
-    res = {}
-    s = stdout.lower()
-    patterns = {
-        'trans_rmse': [
-            r"trans.*rmse[:\s]+([0-9eE+.\-]+)",
-            r"translation.*rmse[:\s]+([0-9eE+.\-]+)",
-            r"abs.*trans.*rmse[:\s]+([0-9eE+.\-]+)"
-        ],
-        'rot_rmse': [
-            r"rot.*rmse[:\s]+([0-9eE+.\-]+)",
-            r"rotation.*rmse[:\s]+([0-9eE+.\-]+)",
-        ],
-        'trans_mean': [
-            r"trans.*mean[:\s]+([0-9eE+.\-]+)",
-            r"translation.*mean[:\s]+([0-9eE+.\-]+)"
-        ],
-        'trans_median': [
-            r"trans.*median[:\s]+([0-9eE+.\-]+)",
-        ]
-    }
-    for key, pats in patterns.items():
-        for pat in pats:
-            m = re.search(pat, s)
-            if m:
-                try:
-                    res[key] = float(m.group(1))
-                    break
-                except:
-                    continue
-    return res
-
 def safe_mkdir(path: str):
     os.makedirs(path, exist_ok=True)
 

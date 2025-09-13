@@ -9,8 +9,22 @@ class GroundTruthNode(OdometryNode):
         self.odom_type = 'Odometry'
         self.mode = 'gt'
         self.msg_type = Odometry
+        self.declare_parameter('offset', False)
+        self.offset = self.get_parameter('offset').get_parameter_value().bool_value
 
         self.get_logger().info('GroundTruthNode initialized, waiting for bag reader status...')
+        if self.offset:
+            self.declare_parameter('initial_x', 0.0)
+            self.declare_parameter('initial_y', 0.0)
+            self.declare_parameter('offset_x', 0.0)
+            self.declare_parameter('offset_y', 0.0)
+            init_x = self.get_parameter('initial_x').get_parameter_value().double_value
+            init_y = self.get_parameter('initial_y').get_parameter_value().double_value
+            offset_x = self.get_parameter('offset_x').get_parameter_value().double_value
+            offset_y = self.get_parameter('offset_y').get_parameter_value().double_value
+
+            self.initial_coords = (init_x - offset_x, init_y - offset_y)
+            self.get_logger().info(f'GroundTruthNode offset x: {self.initial_coords[0]} y: {self.initial_coords[1]}')
 
     def poseCallback(self, msg: PoseWithCovarianceStamped):
         if not self.is_running:
@@ -19,6 +33,16 @@ class GroundTruthNode(OdometryNode):
         pose_msg = PoseWithCovarianceStamped()
         pose_msg.header = msg.header
         pose_msg.pose = msg.pose
+
+        if self.offset:
+            pose_msg.pose.pose.position.x -= self.initial_coords[0]
+            pose_msg.pose.pose.position.y -= self.initial_coords[1]
+            for i in range(2):
+                for j in range(6):
+                    pose_msg.pose.covariance[i * 6 + j] = max(
+                        pose_msg.pose.covariance[i * 6 + j], 1e-6
+                    )
+
         if self.odom_publisher:
             self.odom_publisher.publish(pose_msg)
 

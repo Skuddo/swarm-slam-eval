@@ -42,24 +42,34 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"Num robots ({num_robots}) > max allowed ({conf_max_robots}). Shutting down.")
         return [Shutdown()]
     
-    try:
-        robot1_bag_name = f"{config[sequence]['names']}1"
-        robot1_bag_path = os.path.join(dataset_path, robot1_bag_name)
-        ground_truth_topic_name = config[sequence]['topics']['ground_truth']['src']
-        prescan_script_path = os.path.join(project_root, 'utils', 'get_first_pose.py')
+    initial_coords = [] 
 
-        command = [ sys.executable, prescan_script_path,
-                   '--bag-path', robot1_bag_path,
-                   '--topic', ground_truth_topic_name 
-                   ]
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-        initial_x_str, initial_y_str = result.stdout.strip().split(',')
-        initial_x = float(initial_x_str)
-        initial_y = float(initial_y_str)
-        logger.info(f"Pre-scan successful. Got initial coords: x={initial_x}, y={initial_y}")
-    except (subprocess.CalledProcessError, ValueError, FileNotFoundError, KeyError) as e:
-        logger.error(f"Failed to get initial coordinates from bag: {e}. Defaulting to (0,0).")
-        initial_x, initial_y = 0.0, 0.0
+    for i in range(num_robots):
+        try:
+            robot1_bag_name = f"{config[sequence]['names']}{i+1}"
+            robot1_bag_path = os.path.join(dataset_path, robot1_bag_name)
+            ground_truth_topic_name = config[sequence]['topics']['ground_truth']['src']
+            prescan_script_path = os.path.join(project_root, 'utils', 'get_first_pose.py')
+
+            command = [ sys.executable, prescan_script_path,
+                    '--bag-path', robot1_bag_path,
+                    '--topic', ground_truth_topic_name 
+                    ]
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            initial_x_str, initial_y_str = result.stdout.strip().split(',')
+            initial_x = float(initial_x_str)
+            initial_y = float(initial_y_str)
+            initial_coords.append((initial_x, initial_y))
+            logger.info(f"Pre-scan successful. Got initial coords: x={initial_x}, y={initial_y}")
+        except (subprocess.CalledProcessError, ValueError, FileNotFoundError, KeyError) as e:
+            logger.error(f"Failed to get initial coordinates from bag: {e}. Defaulting to (0,0).")
+            initial_coords.append((0.0, 0.0))
+
+
+    base_x, base_y = initial_coords[0]
+    offsets = [ (x - base_x, y - base_y) for (x, y) in initial_coords ]
+
+    logger.info(f"Computed offsets (relative to robot 1): {offsets}")
 
     try:
         config_script_path = os.path.join(project_root, 'utils', 'config_generator.py')
@@ -68,8 +78,6 @@ def launch_setup(context, *args, **kwargs):
         command = [
             sys.executable, config_script_path,
             '--num-robots', str(num_robots),
-            '--initial-x', str(initial_x),
-            '--initial-y', str(initial_y),
             '--nav-mode', str(nav_mode),
             '--output-path', rviz_config_file
         ]
@@ -99,7 +107,7 @@ def launch_setup(context, *args, **kwargs):
     if nav_mode == 'cslam':
         cslam_launch_file = os.path.join(pkg_share, 'launch', 'cslam.launch.py')
         cslam_config_path = os.path.join(
-            get_package_share_directory("cslam_experiments"), "config", "graco_lidar.yaml")
+            get_package_share_directory("swarm_slam_eval"), "config", "cslam_graco_lidar.yaml")
 
         cslam_system = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(cslam_launch_file),
@@ -159,7 +167,6 @@ def launch_setup(context, *args, **kwargs):
                     'graph_name': 'ground_truth',
                     'use_sim_time': use_sim_time,
                     'update_time' : update_time,
-                    # pass clock wait so ground-truth saver doesn't race with /clock
                     'clock_wait_timeout': clock_wait_timeout
                 }]
             ),
@@ -167,7 +174,14 @@ def launch_setup(context, *args, **kwargs):
                 package='swarm_slam_eval',
                 executable='ground_truth_node',
                 name='ground_truth',
-                parameters=[{'use_sim_time': use_sim_time}],
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'offset': True,
+                    'initial_x': initial_coords[i][0],
+                    'initial_y': initial_coords[i][1],
+                    'offset_x': offsets[i][0],
+                    'offset_y': offsets[i][1]
+                    }],
             )
         ]
 

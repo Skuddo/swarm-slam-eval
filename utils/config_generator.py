@@ -1,7 +1,7 @@
 import os
 import argparse
 
-def generate_rviz_config(num_robots: int, initial_x: float, initial_y: float, output_path: str, nav_mode: str):
+def generate_rviz_config(num_robots: int, output_path: str, nav_mode: str):
     rviz_content = f"""
 Panels:
   - Class: rviz_common/Displays
@@ -25,8 +25,8 @@ Visualization Manager:
       Class: rviz_default_plugins/Orbit
       Distance: 50.0
       Focal Point:
-        X: {initial_x}
-        Y: {initial_y}
+        X: 0.0
+        Y: 0.0
         Z: 0.0
       Name: Orbit (RViz)
       Pitch: 0.785398185
@@ -37,8 +37,8 @@ Visualization Manager:
       Name: Grid
       Enabled: true
       Offset:
-        X: {initial_x}
-        Y: {initial_y}
+        X: 0.0
+        Y: 0.0
         Z: -0.01
     - Class: rviz_default_plugins/TF
       Name: TF
@@ -76,14 +76,6 @@ if __name__ == '__main__':
       help="how many robots"     
       )
     parser.add_argument(
-      '--initial-x', type=float, required=True,
-      help="X starting coordinate for the first robot"     
-      )
-    parser.add_argument(
-      '--initial-y', type=float, required=True,
-      help="Y starting coordinate for the first robot"
-      )
-    parser.add_argument(
       '--nav-mode', type=str, required=True,
       help="Which secondary pose source to use"     
       )
@@ -93,4 +85,4 @@ if __name__ == '__main__':
       )
     args = parser.parse_args()
 
-    generate_rviz_config(args.num_robots, args.initial_x, args.initial_y, args.output_path, args.nav_mode)
+    generate_rviz_config(args.num_robots, args.output_path, args.nav_mode)

@@ -13,15 +13,8 @@ SIGNAL_QOS = QoSProfile(
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
 )
 
-CSLAM_QOS = QoSProfile(
-    reliability=QoSReliabilityPolicy.RELIABLE,
-    durability=QoSDurabilityPolicy.VOLATILE,
-    history=QoSHistoryPolicy.KEEP_LAST,
-    depth=10
-)
-
 CLOCK_QOS = QoSProfile(
-    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL, # Latching
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1

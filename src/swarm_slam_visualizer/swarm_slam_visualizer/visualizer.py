@@ -6,12 +6,7 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseWithCovarianceStamped, Point
-
-DATA_QOS = QoSProfile(
-    depth=10,
-    reliability=QoSReliabilityPolicy.BEST_EFFORT,
-    durability=QoSDurabilityPolicy.VOLATILE
-)
+from swarm_slam_eval.qos_profiles import DATA_QOS
 
 COLORS = [
     ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8),   # Red
