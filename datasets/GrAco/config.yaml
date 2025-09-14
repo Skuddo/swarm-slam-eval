@@ -5,32 +5,24 @@ ground:
     ground_truth:
       src: /gnss/ground_truth
       type: nav_msgs/msg/Odometry
-      hz: 200
     gps/fix:
       src: /gnss/gps
       type: sensor_msgs/msg/NavSatFix
-      hz: 10
     imu:
       src: /gnss/imu
       type: sensor_msgs/msg/Imu
-      hz: 125
     pointcloud:
       src: /velodyne/points
       type: sensor_msgs/msg/PointCloud2
-      hz: 10
     camera_left/info:
       src: /camera_left/camera_info
       type: sensor_msgs/msg/CameraInfo
-      hz: 20
     camera_left/raw:
       src: /camera_right/camera_info
       type: sensor_msgs/msg/CameraInfo
-      hz: 20
     camera_right/info:
       src: /camera_left/image_raw
       type: sensor_msgs/msg/Image
-      hz: 20
     camera_right/raw:
       src: /camera_right/image_raw
       type: sensor_msgs/msg/Image
-      hz: 20

@@ -24,12 +24,10 @@ class BagReaderNode(Node):
         super().__init__('bag_reader_node')
 
         self.declare_parameter('bag_path', '')
-        self.declare_parameter('sim_rate', 1.0)
         self.declare_parameter('is_clock_publisher', False)
         self.declare_parameter('buffer_size', 200)
 
         bag_path = self.get_parameter('bag_path').get_parameter_value().string_value
-        self.sim_rate = self.get_parameter('sim_rate').get_parameter_value().double_value
         self.is_clock_publisher = self.get_parameter('is_clock_publisher').get_parameter_value().bool_value
         self.buffer_size = self.get_parameter('buffer_size').get_parameter_value().integer_value
 
@@ -133,7 +131,6 @@ class BagReaderNode(Node):
         if not self.is_playing:
             self.is_playing = True
             self.status_publisher.publish(String(data='playing'))
-            self.get_logger().info(f"Starting playback at {self.sim_rate}x real time...")
             threading.Thread(target=self.play_bag_in_real_time, daemon=True).start()
 
     def _fill_buffer(self):
@@ -168,7 +165,7 @@ class BagReaderNode(Node):
             topic, data, t_ns = self.message_buffer.popleft()
             rebased_ns = t_ns - self.canonical_start_time_ns
             elapsed_wall = time.time() - wall_start_time
-            delay_s = (rebased_ns / 1e9 / self.sim_rate) - elapsed_wall
+            delay_s = (rebased_ns / 1e9) - elapsed_wall
             if delay_s > 0:
                 time.sleep(delay_s)
 

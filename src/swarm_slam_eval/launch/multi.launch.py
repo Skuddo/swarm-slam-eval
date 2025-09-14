@@ -19,12 +19,10 @@ def launch_setup(context, *args, **kwargs):
     dataset = LaunchConfiguration('dataset').perform(context)
     sequence = LaunchConfiguration('dataset_sequence').perform(context)
     num_robots = int(LaunchConfiguration('num_robots').perform(context))
-    sim_rate = float(LaunchConfiguration('sim_rate').perform(context))
     use_sim_time = bool(LaunchConfiguration('use_sim_time').perform(context))
     nav_mode = str(LaunchConfiguration('nav_mode').perform(context))
     update_time = float(LaunchConfiguration('update_time').perform(context))
-    sensor_type = str(LaunchConfiguration('sensor_type').perform(context))
-    clock_wait_timeout = float(LaunchConfiguration('clock_wait_timeout').perform(context))
+    eval_delay = float(LaunchConfiguration('eval_delay').perform(context))
 
     try:
         pkg_share = get_package_share_directory('swarm_slam_eval')
@@ -64,7 +62,7 @@ def launch_setup(context, *args, **kwargs):
         except (subprocess.CalledProcessError, ValueError, FileNotFoundError, KeyError) as e:
             logger.error(f"Failed to get initial coordinates from bag: {e}. Defaulting to (0,0).")
             initial_coords.append((0.0, 0.0))
-
+ 
 
     base_x, base_y = initial_coords[0]
     offsets = [ (x - base_x, y - base_y) for (x, y) in initial_coords ]
@@ -128,19 +126,11 @@ def launch_setup(context, *args, **kwargs):
                 'graph_name': 'cslam_global',
                 'use_sim_time': use_sim_time,
                 'update_time': update_time,
-                'clock_wait_timeout': clock_wait_timeout
             }]
         )
 
-        delayed_cslam_launch = TimerAction(
-            period=5.0,
-            actions=[
-                cslam_system,
-                global_graph_saver
-            ]
-        )
-
-        actions_to_launch.append(delayed_cslam_launch)
+        actions_to_launch.append(cslam_system)
+        actions_to_launch.append(global_graph_saver)
         
     for i in range(num_robots):
         bag_path = os.path.join(dataset_path, f'{config[sequence]["names"]}{i+1}')
@@ -152,7 +142,6 @@ def launch_setup(context, *args, **kwargs):
                 name='bag_reader',
                 parameters=[{
                     'bag_path': bag_path,
-                    'sim_rate': sim_rate,
                     'use_sim_time': use_sim_time,
                     'update_time':  update_time,
                     'is_clock_publisher': (i == 0)
@@ -167,7 +156,6 @@ def launch_setup(context, *args, **kwargs):
                     'graph_name': 'ground_truth',
                     'use_sim_time': use_sim_time,
                     'update_time' : update_time,
-                    'clock_wait_timeout': clock_wait_timeout
                 }]
             ),
             Node(
@@ -196,7 +184,6 @@ def launch_setup(context, *args, **kwargs):
                         'graph_name': 'cslam',
                         'use_sim_time': use_sim_time,
                         'update_time' : update_time,
-                        'clock_wait_timeout': clock_wait_timeout
                     }]
                 )
             )
@@ -209,10 +196,14 @@ def launch_setup(context, *args, **kwargs):
                 )
             )
 
-        robot_group = GroupAction([
-            PushRosNamespace(f'r{i}'),
-            *per_robot_nodes
-        ])
+        robot_group = TimerAction(
+            period=eval_delay,
+            actions = [
+                GroupAction([
+                PushRosNamespace(f'r{i}'),
+                *per_robot_nodes
+            ])]
+        )
         actions_to_launch.append(robot_group)
 
     # Visualizer node
@@ -244,7 +235,6 @@ def generate_launch_description():
         DeclareLaunchArgument('dataset', default_value='GrAco'),
         DeclareLaunchArgument('dataset_sequence', default_value='ground'),
         DeclareLaunchArgument('num_robots', default_value='3'),
-        DeclareLaunchArgument('sim_rate', default_value='1.0'),
         DeclareLaunchArgument('visualize', default_value='true',
                               description='Whether to launch visualization nodes'),
         DeclareLaunchArgument('use_sim_time', default_value='true',
@@ -253,10 +243,8 @@ def generate_launch_description():
                               description='What to use for pose calculation'),
         DeclareLaunchArgument('update_time', default_value='5.0',
                               description='How often (in seconds) the evaluator saves checkpoints'),
-        DeclareLaunchArgument('clock_wait_timeout', default_value='10.0',
-                              description='How long (s) to wait for /clock before falling back'),
-        DeclareLaunchArgument('sensor_type',
-                              description='What frontend sensor is used', default_value=''),
-        
+        DeclareLaunchArgument('eval_delay', default_value='5.0',
+                              description='How long to delay the evaluation part of the project (and bags)'),
+
         OpaqueFunction(function=launch_setup)
     ])

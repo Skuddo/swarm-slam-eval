@@ -73,7 +73,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate an RViz config file for multi-robot visualization.')
     parser.add_argument(
       '--num-robots', type=int, required=True,
-      help="how many robots"     
+      help="How many robots"     
       )
     parser.add_argument(
       '--nav-mode', type=str, required=True,

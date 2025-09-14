@@ -17,14 +17,12 @@ class PoseGraphNode(Node):
         self.declare_parameter('results_base_path', '')
         self.declare_parameter('graph_name', '')
         self.declare_parameter('update_time', 5.0)
-        self.declare_parameter('clock_wait_timeout', 5.0)
         self.declare_parameter('tum_timestamp_mode', 'absolute')
 
         self.results_base_path = self.get_parameter('results_base_path').get_parameter_value().string_value
         self.graph_name = self.get_parameter('graph_name').get_parameter_value().string_value
         self.update_interval = self.get_parameter('update_time').get_parameter_value().double_value
         self.use_sim_time = self.get_parameter('use_sim_time').get_parameter_value().bool_value
-        self.clock_wait_timeout = self.get_parameter('clock_wait_timeout').get_parameter_value().double_value
         self.tum_timestamp_mode = self.get_parameter('tum_timestamp_mode').get_parameter_value().string_value.lower()
         if self.tum_timestamp_mode not in ('elapsed', 'absolute', 'save_time'):
             self.get_logger().warn(f"Invalid tum_timestamp_mode '{self.tum_timestamp_mode}', defaulting to 'absolute'")
