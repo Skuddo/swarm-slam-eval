@@ -11,49 +11,109 @@ def launch_setup(context, *args, **kwargs):
     num_robots = int(LaunchConfiguration('num_robots').perform(context))
     use_sim_time = LaunchConfiguration('use_sim_time') 
     cslam_config_file = LaunchConfiguration('cslam_config_file').perform(context)
-    
+    dataset = LaunchConfiguration('dataset').perform(context)
+
     actions_to_launch = []
 
     for i in range(num_robots):
         robot_namespace = f'r{i}'
 
+        # Pick the correct transform container based on dataset
+        if dataset == 'GrAco':
+            transform_container = ComposableNodeContainer(
+                name='static_tf_container',
+                namespace='',  # Namespace is applied by GroupAction
+                package='rclcpp_components',
+                executable='component_container',
+                composable_node_descriptions=[
+                    ComposableNode(
+                        package='tf2_ros',
+                        plugin='tf2_ros::StaticTransformBroadcasterNode',
+                        name='base_to_velodyne_tf',
+                        parameters=[{
+                            'use_sim_time': use_sim_time,
+                            'frame_id': 'base_link',
+                            'child_frame_id': 'velodyne',
+                        }]
+                    ),
+                    ComposableNode(
+                        package='tf2_ros',
+                        plugin='tf2_ros::StaticTransformBroadcasterNode',
+                        name='base_to_gnss_tf',
+                        parameters=[{
+                            'use_sim_time': use_sim_time,
+                            'frame_id': 'base_link',
+                            'child_frame_id': 'gnss',
+                            'translation.x': -0.01192,
+                            'translation.y': -0.0197,
+                            'translation.z': 0.1226,
+                        }]
+                    ),
+                ],
+                output='screen'
+            )
+        elif dataset == 'S3E':
+            transform_container = ComposableNodeContainer(
+                name='s3e_static_tf_container',
+                namespace='',  # Namespace is applied by GroupAction
+                package='rclcpp_components',
+                executable='component_container',
+                composable_node_descriptions=[
+                    ComposableNode(
+                        package='tf2_ros',
+                        plugin='tf2_ros::StaticTransformBroadcasterNode',
+                        name='left_camera_to_velodyne_tf',
+                        parameters=[{
+                            'use_sim_time': use_sim_time,
+                            'frame_id': 'left_camera',
+                            'child_frame_id': 'velodyne',
+                            'translation.x': 0.13,
+                            'translation.y': 0.20,
+                            'translation.z': -0.13,
+                            'rotation.r': 0.5,
+                            'rotation.p': -0.5,
+                            'rotation.y': 0.5,
+                        }]
+                    ),
+                    ComposableNode(
+                        package='tf2_ros',
+                        plugin='tf2_ros::StaticTransformBroadcasterNode',
+                        name='velodyne_to_imu_tf',
+                        parameters=[{
+                            'use_sim_time': use_sim_time,
+                            'frame_id': 'velodyne',
+                            'child_frame_id': 'imu_link',
+                            'translation.x': -0.051,
+                            'translation.y': 0.0195,
+                            'translation.z': -0.094,
+                        }]
+                    ),
+                    ComposableNode(
+                        package='tf2_ros',
+                        plugin='tf2_ros::StaticTransformBroadcasterNode',
+                        name='base_link_to_left_camera_tf',
+                        parameters=[{
+                            'use_sim_time': use_sim_time,
+                            'frame_id': 'base_link',
+                            'child_frame_id': 'left_camera',
+                            'translation.x': 0.0,
+                            'translation.y': 0.0,
+                            'translation.z': 0.0,
+                            'rotation.r': 0.0,
+                            'rotation.p': 0.0,
+                            'rotation.y': 0.0,
+                        }]
+                    ),
+                ],
+                output='screen'
+            )
+        else:
+            raise RuntimeError(f"Unsupported dataset: {dataset}")
+
         robot_group = GroupAction(
             actions=[
                 PushRosNamespace(robot_namespace),
-
-                # The container now lives inside the namespaced GroupAction
-                ComposableNodeContainer(
-                    name='static_tf_container',
-                    namespace='', # The namespace is already applied by the GroupAction
-                    package='rclcpp_components',
-                    executable='component_container',
-                    composable_node_descriptions=[
-                        ComposableNode(
-                            package='tf2_ros',
-                            plugin='tf2_ros::StaticTransformBroadcasterNode',
-                            name='base_to_velodyne_tf',
-                            parameters=[{
-                                'use_sim_time': use_sim_time,
-                                'frame_id': 'base_link',
-                                'child_frame_id': 'velodyne',
-                            }]
-                        ),
-                        ComposableNode(
-                            package='tf2_ros',
-                            plugin='tf2_ros::StaticTransformBroadcasterNode',
-                            name='base_to_gnss_tf',
-                            parameters=[{
-                                'use_sim_time': use_sim_time,
-                                'frame_id': 'base_link',
-                                'child_frame_id': 'gnss',
-                                'translation.x': -0.01192,
-                                'translation.y': -0.0197,
-                                'translation.z': 0.1226,
-                            }]
-                        ),
-                    ],
-                    output='screen'
-                ),
+                transform_container,
 
                 Node(
                     package='rtabmap_odom', 
@@ -128,7 +188,6 @@ def launch_setup(context, *args, **kwargs):
     return actions_to_launch
 
 def generate_launch_description():
-    # Path to the default C-SLAM config file, now located within our own package.
     default_cslam_config = os.path.join(
         get_package_share_directory("swarm_slam_eval"), 
         "config", 
@@ -142,6 +201,8 @@ def generate_launch_description():
                               description='Use simulation (bag) time.'),
         DeclareLaunchArgument('cslam_config_file', default_value=default_cslam_config,
                               description='Path to the C-SLAM parameters YAML file.'),
+        DeclareLaunchArgument('dataset', default_value='GrAco',
+                              description='Which dataset to use (GrAco or S3E).'),
         
         OpaqueFunction(function=launch_setup)
     ])

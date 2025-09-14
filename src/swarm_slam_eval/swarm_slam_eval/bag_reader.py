@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import importlib
 import json
 import yaml
@@ -26,10 +27,12 @@ class BagReaderNode(Node):
         self.declare_parameter('bag_path', '')
         self.declare_parameter('is_clock_publisher', False)
         self.declare_parameter('buffer_size', 200)
+        self.declare_parameter('robot_prefix', '')
 
         bag_path = self.get_parameter('bag_path').get_parameter_value().string_value
         self.is_clock_publisher = self.get_parameter('is_clock_publisher').get_parameter_value().bool_value
         self.buffer_size = self.get_parameter('buffer_size').get_parameter_value().integer_value
+        self.robot_prefix = self.get_parameter('robot_prefix').get_parameter_value().string_value
 
         if not bag_path:
             self.get_logger().error("'bag_path' parameter not set. Shutting down.")
@@ -38,16 +41,26 @@ class BagReaderNode(Node):
 
         self.get_logger().info(f"Loading bag from: {bag_path}")
 
+        # Look for config.yaml next to bag; if not there try dataset folder (one level up)
         config_path = os.path.join(os.path.dirname(bag_path), 'config.yaml')
+        if not os.path.exists(config_path):
+            config_path = os.path.join(os.path.dirname(os.path.dirname(bag_path)), 'config.yaml')
+
         try:
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
-            topic_mappings = config.get('ground', {}).get('topics', {})
-        except (IOError, yaml.YAMLError) as e:
+            # Try 'ground' key first, then fall back to first top-level key (works for S3E)
+            if 'ground' in config:
+                topic_mappings = config.get('ground', {}).get('topics', {})
+            else:
+                first_key = next(iter(config))
+                topic_mappings = config.get(first_key, {}).get('topics', {})
+        except (IOError, yaml.YAMLError, StopIteration) as e:
             self.get_logger().error(f"Failed to load config file at {config_path}: {e}")
             rclpy.shutdown()
             return
 
+        # open the bag
         self.storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
         self.converter_options = ConverterOptions('', '')
         self.reader = SequentialReader()
@@ -60,11 +73,25 @@ class BagReaderNode(Node):
 
         self.topic_publishers = {}
         self.msg_types = {}
-        all_topics_and_types = {t.name: t.type for t in self.reader.get_all_topics_and_types()}
         self.src_to_dst = {}
+        all_topics_and_types = {t.name: t.type for t in self.reader.get_all_topics_and_types()}
 
+        # Build publishers based on config topics; support {robot} placeholder
         for dst_name, cfg in topic_mappings.items():
-            src_topic = cfg['src']
+            if not isinstance(cfg, dict):
+                continue
+            src_template = cfg.get('src')
+            if not src_template:
+                continue
+
+            if self.robot_prefix:
+                try:
+                    src_topic = src_template.format(robot=self.robot_prefix)
+                except Exception:
+                    src_topic = src_template
+            else:
+                src_topic = src_template
+
             actual_type = all_topics_and_types.get(src_topic)
             if not actual_type:
                 self.get_logger().warn(f"Topic '{src_topic}' not found in bag, skipping.")
@@ -72,23 +99,45 @@ class BagReaderNode(Node):
 
             msg_class = self._import_msg_type(actual_type)
             if msg_class:
+                # create publisher on dst_name (this is what downstream nodes will subscribe to)
                 pub = self.create_publisher(msg_class, dst_name, DATA_QOS)
+                # key publishers by source topic from bag so we know which incoming messages to forward
                 self.topic_publishers[src_topic] = pub
                 self.msg_types[src_topic] = msg_class
                 self.src_to_dst[src_topic] = dst_name
 
-        topics_json = json.dumps([
-            {'name': dst, 'type': all_topics_and_types.get(cfg['src'], 'unknown')}
-            for dst, cfg in topic_mappings.items() if cfg['src'] in self.src_to_dst
-        ])
-        self.topics_info_publisher = self.create_publisher(String, "topics_info", SIGNAL_QOS)
+        # Publish topics_info in the format downstream nodes expect: {'name': <dst>, 'type': <type>}
+        # also include 'src' (resolved source in bag) as extra helpful info
+        topics_info = []
+        for dst, cfg in topic_mappings.items():
+            if not isinstance(cfg, dict):
+                continue
+            src_template = cfg.get('src', '')
+            # resolved source (if robot_prefix used)
+            try:
+                resolved_src = src_template.format(robot=self.robot_prefix) if self.robot_prefix and '{robot' in src_template else src_template
+            except Exception:
+                resolved_src = src_template
+            # only include if the resolved src is actually present and we created a publisher for it
+            if resolved_src in self.topic_publishers:
+                topics_info.append({
+                    'name': dst,  # destination topic name (what other nodes should subscribe to)
+                    'type': all_topics_and_types.get(resolved_src, 'unknown'),
+                    'src': resolved_src
+                })
+
+        topics_json = json.dumps(topics_info)
+        self.topics_info_publisher = self.create_publisher(String, 'topics_info', SIGNAL_QOS)
+        # publish once to announce available topics
         self.topics_info_publisher.publish(String(data=topics_json))
         self.get_logger().info(f"Published topics_info: {topics_json}")
 
+        # clock publisher (only one bag_reader should publish /clock)
         self.clock_publisher = None
         if self.is_clock_publisher:
             self.clock_publisher = self.create_publisher(Clock, '/clock', CLOCK_QOS)
 
+        # Determine canonical start time by peeking into bag
         self.canonical_start_time_ns = -1
         try:
             peek_reader = SequentialReader()
@@ -98,7 +147,7 @@ class BagReaderNode(Node):
                 self.canonical_start_time_ns = t
                 self.get_logger().info(f"Canonical start time: {self.canonical_start_time_ns / 1e9:.6f}")
 
-                if self.is_clock_publisher:
+                if self.is_clock_publisher and self.clock_publisher:
                     initial_clock = Clock()
                     sim_time = rclpy.time.Time(nanoseconds=0)
                     initial_clock.clock = sim_time.to_msg()
@@ -110,7 +159,7 @@ class BagReaderNode(Node):
         self.message_buffer = deque()
         self.is_playing = False
 
-        self.status_publisher = self.create_publisher(String, "status", SIGNAL_QOS)
+        self.status_publisher = self.create_publisher(String, 'status', SIGNAL_QOS)
         self.status_publisher.publish(String(data='ready'))
         self.create_subscription(Empty, '/start_simulation', self.start_playback_callback, SIGNAL_QOS)
 
@@ -169,24 +218,30 @@ class BagReaderNode(Node):
             if delay_s > 0:
                 time.sleep(delay_s)
 
-            msg_class = self.msg_types[topic]
+            msg_class = self.msg_types.get(topic)
+            if msg_class is None:
+                # unexpected: no registered type
+                continue
+
             try:
                 msg = rclpy.serialization.deserialize_message(data, msg_class)
             except Exception as e:
                 self.get_logger().error(f"Deserialization failed on {topic}: {e}")
                 continue
 
+            # update header stamps if present
             if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'):
-                old_frame = msg.header.frame_id or "world"
+                old_frame = getattr(msg.header, 'frame_id', 'world') or 'world'
                 new_stamp = Time()
                 new_stamp.sec = int(rebased_ns / 1e9)
                 new_stamp.nanosec = int(rebased_ns % 1e9)
                 msg.header.stamp = new_stamp
                 msg.header.frame_id = old_frame
 
+            # publish using the publisher keyed by src topic
             self.topic_publishers[topic].publish(msg)
 
-            if self.is_clock_publisher:
+            if self.is_clock_publisher and self.clock_publisher:
                 clock_msg = Clock()
                 sim_time = rclpy.time.Time(nanoseconds=rebased_ns)
                 clock_msg.clock = sim_time.to_msg()

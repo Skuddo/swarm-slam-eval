@@ -1,36 +1,19 @@
 Playground-1:
-  sequences: 3
-  names: ground-0
+  sequences: 1
+  robots: 3
   topics:
-    ground_truth:
-      src: /gnss/ground_truth
-      type: nav_msgs/msg/Odometry
-      hz: 200
     gps/fix:
-      src: /gnss/gps
+      src: '/{robot}/fix'
       type: sensor_msgs/msg/NavSatFix
-      hz: 10
     imu:
-      src: /gnss/imu
+      src: '/{robot}/imu/data'
       type: sensor_msgs/msg/Imu
-      hz: 125
-    pointcloud:
-      src: /velodyne/points
-      type: sensor_msgs/msg/PointCloud2
-      hz: 10
-    camera_left/info:
-      src: /camera_left/camera_info
-      type: sensor_msgs/msg/CameraInfo
-      hz: 20
     camera_left/raw:
-      src: /camera_right/camera_info
-      type: sensor_msgs/msg/CameraInfo
-      hz: 20
-    camera_right/info:
-      src: /camera_left/image_raw
-      type: sensor_msgs/msg/Image
-      hz: 20
+      src: '/{robot}/left_camera/compressed'
+      type: sensor_msgs/msg/CompressedImage
     camera_right/raw:
-      src: /camera_right/image_raw
-      type: sensor_msgs/msg/Image
-      hz: 20
+      src: '/{robot}/right_camera/compressed'
+      type: sensor_msgs/msg/CompressedImage
+    pointcloud:
+      src: '/{robot}/velodyne_points'
+      type: sensor_msgs/msg/PointCloud2

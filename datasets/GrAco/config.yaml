@@ -1,5 +1,6 @@
 ground:
   sequences: 3
+  robots: 3
   names: ground-0
   topics:
     ground_truth:
