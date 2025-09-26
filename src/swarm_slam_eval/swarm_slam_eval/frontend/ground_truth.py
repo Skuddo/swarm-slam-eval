@@ -23,7 +23,8 @@ class GroundTruthNode(OdometryNode):
             offset_x = self.get_parameter('offset_x').get_parameter_value().double_value
             offset_y = self.get_parameter('offset_y').get_parameter_value().double_value
 
-            self.initial_coords = (init_x - offset_x, init_y - offset_y)
+            # self.initial_coords = (init_x - offset_x, init_y - offset_y)
+            self.initial_coords = (init_x, init_y)
             self.get_logger().info(f'GroundTruthNode offset x: {self.initial_coords[0]} y: {self.initial_coords[1]}')
 
     def poseCallback(self, msg: PoseWithCovarianceStamped):

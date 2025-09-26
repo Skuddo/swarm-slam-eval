@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import json
 import math
@@ -6,6 +7,7 @@ import argparse
 import subprocess
 from typing import Optional, List, Dict, Tuple
 import numpy as np
+import matplotlib.pyplot as plt
 
 def index_based_association(gt: List[Tuple[float, np.ndarray]], est: List[Tuple[float, np.ndarray]]) -> List[Tuple[int,int]]:
     pairs = []
@@ -84,6 +86,7 @@ def associate_tum(gt: List[Tuple[float, np.ndarray]], est: List[Tuple[float, np.
 
     # fallback: no timestamp matches found -> try index-based association
     return index_based_association(gt, est)
+
 
 def get_latest_file(directory: str, ext: str) -> Optional[str]:
     if not os.path.isdir(directory):
@@ -219,41 +222,6 @@ def invert_transform(T: np.ndarray) -> np.ndarray:
     Tinv[:3, 3] = -R.T.dot(t)
     return Tinv
 
-# ---------------------- associations ----------------------
-
-def associate_tum(gt: List[Tuple[float, np.ndarray]], est: List[Tuple[float, np.ndarray]], max_diff: float = 0.05) -> List[Tuple[int, int]]:
-    pairs: List[Tuple[int, int]] = []
-    if not gt or not est:
-        return pairs
-    est_times = [t for t, _ in est]
-    # Build index for EST times (sorted)
-    est_sorted_idx = list(range(len(est_times)))
-    # For each gt timestamp find nearest est
-    for gi, (gts, _) in enumerate(gt):
-        # binary search in est_times
-        lo = 0; hi = len(est_times) - 1
-        best_j = None
-        best_diff = float('inf')
-        # linear scan near neighbors might be faster for small lists, but binary search + expand
-        # We will do a simple linear search with clamp for reliability
-        # (this keeps code simple and robust)
-        for ej, ets in enumerate(est_times):
-            diff = abs(ets - gts)
-            if diff < best_diff:
-                best_diff = diff
-                best_j = ej
-        if best_diff <= max_diff and best_j is not None:
-            pairs.append((gi, best_j))
-    # Remove duplicates on est index: keep first match (by gt ordering)
-    used_est = set()
-    filtered = []
-    for gi, ej in pairs:
-        if ej in used_est:
-            continue
-        used_est.add(ej)
-        filtered.append((gi, ej))
-    return filtered
-
 # ---------------------- Umeyama / APE ----------------------
 
 def umeyama_align(A_pts: np.ndarray, B_pts: np.ndarray, with_scale: bool = True) -> Tuple[float, np.ndarray, np.ndarray]:
@@ -282,85 +250,6 @@ def umeyama_align(A_pts: np.ndarray, B_pts: np.ndarray, with_scale: bool = True)
 
 def apply_similarity(T_pts: np.ndarray, s: float, R: np.ndarray, t: np.ndarray) -> np.ndarray:
     return (s * (R @ T_pts.T).T) + t
-
-def index_based_association(gt: List[Tuple[float, np.ndarray]], est: List[Tuple[float, np.ndarray]]) -> List[Tuple[int,int]]:
-    pairs = []
-    if not gt or not est:
-        return pairs
-    n_gt = len(gt)
-    n_est = len(est)
-    if n_est == 1:
-        # map single est to nearest gt by timestamp
-        est_t = est[0][0]
-        best_g = min(range(n_gt), key=lambda i: abs(gt[i][0] - est_t))
-        return [(best_g, 0)]
-    # proportional mapping
-    for j in range(n_est):
-        gi = int(round(j * (n_gt - 1) / (n_est - 1)))
-        gi = max(0, min(n_gt - 1, gi))
-        pairs.append((gi, j))
-    # remove duplicates on gi if any (keep first)
-    seen_g = set()
-    filtered = []
-    for gi, ej in pairs:
-        if gi in seen_g:
-            continue
-        seen_g.add(gi)
-        filtered.append((gi, ej))
-    return filtered
-
-
-def associate_tum(gt: List[Tuple[float, np.ndarray]], est: List[Tuple[float, np.ndarray]], max_diff: float = 0.05) -> List[Tuple[int, int]]:
-    pairs: List[Tuple[int, int]] = []
-    if not gt or not est:
-        return pairs
-
-    gt_times = [t for t, _ in gt]
-    est_times = [t for t, _ in est]
-
-    # quick statistic on est timestamps
-    if len(est_times) > 1:
-        est_std = float(np.std(np.array(est_times)))
-    else:
-        est_std = 0.0
-
-    # If est timestamps are nearly constant, skip timestamp matching and use index-based mapping
-    if est_std < 1e-6:
-        return index_based_association(gt, est)
-
-    # Normal case: nearest-neighbor using binary search
-    est_idx_sorted = list(range(len(est_times)))
-    est_times_sorted = [est_times[i] for i in est_idx_sorted]
-    # ensure sorted order (est_times might already be monotonic but we don't assume it)
-    perm = sorted(range(len(est_times_sorted)), key=lambda i: est_times_sorted[i])
-    est_times_sorted = [est_times_sorted[i] for i in perm]
-    est_idx_sorted = [est_idx_sorted[i] for i in perm]
-
-    used_est = set()
-    for gi, (gts, _) in enumerate(gt):
-        pos = bisect.bisect_left(est_times_sorted, gts)
-        candidates = []
-        if pos < len(est_times_sorted):
-            candidates.append((abs(est_times_sorted[pos] - gts), est_idx_sorted[pos]))
-        if pos > 0:
-            candidates.append((abs(est_times_sorted[pos-1] - gts), est_idx_sorted[pos-1]))
-        if not candidates:
-            continue
-        candidates.sort(key=lambda x: x[0])
-        best_diff, best_est_idx = candidates[0]
-        if best_diff <= max_diff and best_est_idx not in used_est:
-            used_est.add(best_est_idx)
-            pairs.append((gi, best_est_idx))
-
-    # if association succeeded with some matches, return them
-    if pairs:
-        # sort by gt times (gi ascending)
-        pairs.sort(key=lambda p: gt[p[0]][0])
-        return pairs
-
-    # fallback: no timestamp matches found -> try index-based association
-    return index_based_association(gt, est)
-
 
 # ---------------------- RPE ----------------------
 
@@ -595,6 +484,47 @@ def evaluate_global_snapshots(run_dir: str, robot_dirs: List[str], nav_mode: str
         }
         results['snapshots'].append(snapshot_entry)
 
+    try:
+        snapshots = results.get('snapshots', [])
+        xs = []
+        ys = []
+        labels = []
+
+        for i, s in enumerate(snapshots):
+            labels.append(str(s.get('timestamp', '')[:-2]) + 's')
+            val = s.get('overlay_ratio')
+            ys.append(float(val) if (val is not None) else float('nan'))
+            xs.append(i)
+
+        if snapshots and any(not np.isnan(y) for y in ys):
+            overlay_plot_path = os.path.join(out_dir, "global_overlay_ratio.png")
+            plt.figure(figsize=(10, 4))
+            plt.plot(xs, ys, marker='o', linestyle='-', linewidth=1, label="Overlay ratio")
+            plt.grid(True, linestyle='--', alpha=0.4)
+            plt.xlabel("Time")
+            plt.ylabel("Map Overlay Ratio")
+            plt.title("Map Overlay Ratio Over Time")
+            plt.xticks(xs, labels, rotation=45, ha='right', fontsize=6)
+            clean_xs = np.array(xs)[~np.isnan(ys)]
+            clean_ys = np.array(ys)[~np.isnan(ys)]
+            if len(clean_xs) > 1:
+                coeffs = np.polyfit(clean_xs, clean_ys, 1)  # degree 1 = linear
+                slope_line = np.polyval(coeffs, clean_xs)
+                plt.plot(clean_xs, slope_line, color="red", linestyle="--", linewidth=1.5, label="Trend")
+
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(overlay_plot_path)
+            plt.close()
+            results['overlay_plot'] = overlay_plot_path
+
+
+            # compute average overlay ratio (ignoring NaNs)
+            avg_overlay = np.nanmean(ys)
+            results['avg_overlay_ratio'] = float(avg_overlay)
+    except Exception as e:
+        results.setdefault('errors', []).append(f"Overlay plot failed: {e}")
+
     return results
 
 # ---------------------- CLI / main ----------------------
@@ -705,7 +635,6 @@ def main():
 
     print(f"\nSaved summary JSON to: {summary_path}")
     print(f"Plots & evo results saved under: {out_dir}")
-
 
 if __name__ == "__main__":
     main()
