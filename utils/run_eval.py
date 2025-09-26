@@ -466,7 +466,7 @@ def evaluate_global_snapshots(run_dir: str, robot_dirs: List[str], nav_mode: str
         # estimate overlay ratio: how many matched / global count (best-effort)
         # We use associations from compute_ape_stats which returns 'count'
         matched_count = ape_stats.get('count', 0)
-        overlay_ratio = (local_counts / global_pose_count) if global_pose_count > 0 else None
+        overlay_ratio = (local_counts / global_pose_count) / len(robot_dirs)
 
         snapshot_entry = {
             "timestamp": base,
@@ -508,7 +508,7 @@ def evaluate_global_snapshots(run_dir: str, robot_dirs: List[str], nav_mode: str
             clean_xs = np.array(xs)[~np.isnan(ys)]
             clean_ys = np.array(ys)[~np.isnan(ys)]
             if len(clean_xs) > 1:
-                coeffs = np.polyfit(clean_xs, clean_ys, 1)  # degree 1 = linear
+                coeffs = np.polyfit(clean_xs, clean_ys, 1)
                 slope_line = np.polyval(coeffs, clean_xs)
                 plt.plot(clean_xs, slope_line, color="red", linestyle="--", linewidth=1.5, label="Trend")
 
